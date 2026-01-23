@@ -353,6 +353,134 @@ impl TeamsClient {
         }
     }
 
+    /// Create a new chat (1:1 or group) using Graph API
+    pub async fn create_chat(&self, members: Vec<&str>, topic: Option<&str>) -> Result<GraphChat> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let me = self.get_me().await?;
+        let url = "https://graph.microsoft.com/v1.0/chats";
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let chat_type = if members.len() == 1 { "oneOnOne" } else { "group" };
+
+        // Build members list including self
+        let mut all_members: Vec<serde_json::Value> = vec![
+            serde_json::json!({
+                "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                "roles": ["owner"],
+                "user@odata.bind": format!("https://graph.microsoft.com/v1.0/users('{}')", me.id)
+            })
+        ];
+
+        for member in members {
+            all_members.push(serde_json::json!({
+                "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                "roles": ["owner"],
+                "user@odata.bind": format!("https://graph.microsoft.com/v1.0/users('{}')", member)
+            }));
+        }
+
+        let mut body = serde_json::json!({
+            "chatType": chat_type,
+            "members": all_members
+        });
+
+        if let Some(t) = topic {
+            body["topic"] = serde_json::json!(t);
+        }
+
+        let res = self
+            .http
+            .post(url)
+            .headers(headers)
+            .body(serde_json::to_string(&body)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() || res.status().as_u16() == 201 {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse created chat")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to create chat: {} - {}", status, body))
+        }
+    }
+
+    /// Delete a message from a chat
+    pub async fn delete_message(&self, conversation_id: &str, message_id: &str) -> Result<()> {
+        let token = self.get_token(SCOPE_IC3).await?;
+        let url = format!(
+            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages/{}",
+            conversation_id, message_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.delete(&url).headers(headers).send().await?;
+
+        if res.status().is_success() || res.status().as_u16() == 204 {
+            Ok(())
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to delete message: {} - {}", status, body))
+        }
+    }
+
+    /// Send a reply in a thread (using Graph API for proper threading)
+    pub async fn reply_to_message(&self, chat_id: &str, reply_to_id: &str, content: &str) -> Result<()> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/chats/{}/messages/{}/replies",
+            chat_id, reply_to_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let body = serde_json::json!({
+            "body": {
+                "content": content
+            }
+        });
+
+        let res = self
+            .http
+            .post(&url)
+            .headers(headers)
+            .body(serde_json::to_string(&body)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() || res.status().as_u16() == 201 {
+            Ok(())
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to reply to message: {} - {}", status, body))
+        }
+    }
+
     /// Get activity feed
     pub async fn get_activities(&self) -> Result<Conversations> {
         self.get_conversations("48:notifications", None).await
@@ -606,6 +734,258 @@ impl TeamsClient {
             let status = res.status();
             let body = res.text().await?;
             Err(anyhow!("Failed to create draft: {} - {}", status, body))
+        }
+    }
+
+    /// Reply to an email
+    pub async fn reply_mail(&self, message_id: &str, body: &str, reply_all: bool) -> Result<()> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let endpoint = if reply_all { "replyAll" } else { "reply" };
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/messages/{}/{}",
+            message_id, endpoint
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let request = serde_json::json!({
+            "message": {
+                "body": {
+                    "contentType": "Text",
+                    "content": body
+                }
+            }
+        });
+
+        let res = self
+            .http
+            .post(&url)
+            .headers(headers)
+            .body(serde_json::to_string(&request)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() || res.status().as_u16() == 202 {
+            Ok(())
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to reply to mail: {} - {}", status, body))
+        }
+    }
+
+    /// Forward an email
+    pub async fn forward_mail(&self, message_id: &str, to: Vec<&str>, comment: Option<&str>) -> Result<()> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/messages/{}/forward",
+            message_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let to_recipients: Vec<serde_json::Value> = to
+            .iter()
+            .map(|email| {
+                serde_json::json!({
+                    "emailAddress": {
+                        "address": email
+                    }
+                })
+            })
+            .collect();
+
+        let request = serde_json::json!({
+            "comment": comment.unwrap_or(""),
+            "toRecipients": to_recipients
+        });
+
+        let res = self
+            .http
+            .post(&url)
+            .headers(headers)
+            .body(serde_json::to_string(&request)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() || res.status().as_u16() == 202 {
+            Ok(())
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to forward mail: {} - {}", status, body))
+        }
+    }
+
+    /// Delete an email
+    pub async fn delete_mail(&self, message_id: &str) -> Result<()> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!("https://graph.microsoft.com/v1.0/me/messages/{}", message_id);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.delete(&url).headers(headers).send().await?;
+
+        if res.status().is_success() || res.status().as_u16() == 204 {
+            Ok(())
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to delete mail: {} - {}", status, body))
+        }
+    }
+
+    /// Move an email to a folder
+    pub async fn move_mail(&self, message_id: &str, folder_id: &str) -> Result<MailMessage> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/messages/{}/move",
+            message_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let request = serde_json::json!({
+            "destinationId": folder_id
+        });
+
+        let res = self
+            .http
+            .post(&url)
+            .headers(headers)
+            .body(serde_json::to_string(&request)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse moved message")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to move mail: {} - {}", status, body))
+        }
+    }
+
+    /// Mark email as read or unread
+    pub async fn mark_mail(&self, message_id: &str, is_read: bool) -> Result<()> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!("https://graph.microsoft.com/v1.0/me/messages/{}", message_id);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let request = serde_json::json!({
+            "isRead": is_read
+        });
+
+        let res = self
+            .http
+            .patch(&url)
+            .headers(headers)
+            .body(serde_json::to_string(&request)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() {
+            Ok(())
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to mark mail: {} - {}", status, body))
+        }
+    }
+
+    /// Get email attachments
+    pub async fn get_mail_attachments(&self, message_id: &str) -> Result<MailAttachments> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/messages/{}/attachments",
+            message_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse attachments")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to get attachments: {} - {}", status, body))
+        }
+    }
+
+    /// Download an attachment
+    pub async fn download_attachment(&self, message_id: &str, attachment_id: &str) -> Result<(String, Vec<u8>)> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/messages/{}/attachments/{}",
+            message_id, attachment_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            let attachment: MailAttachment = serde_json::from_str(&body)?;
+            let filename = attachment.name.clone();
+            let content = base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                attachment.content_bytes.unwrap_or_default(),
+            )?;
+            Ok((filename, content))
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to download attachment: {} - {}", status, body))
         }
     }
 }

@@ -102,3 +102,23 @@ pub struct CreateDraftRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cc_recipients: Option<Vec<Recipient>>,
 }
+
+/// Email attachment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailAttachment {
+    pub id: Option<String>,
+    pub name: String,
+    pub content_type: Option<String>,
+    pub size: Option<i64>,
+    pub is_inline: Option<bool>,
+    pub content_bytes: Option<String>,
+}
+
+/// Mail attachments list response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MailAttachments {
+    #[serde(rename = "@odata.context")]
+    pub context: Option<String>,
+    pub value: Vec<MailAttachment>,
+}

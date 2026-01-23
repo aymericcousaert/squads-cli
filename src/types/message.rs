@@ -288,3 +288,14 @@ pub struct SendMessageProperties {
     pub policy_violation: Option<String>,
     pub format_variant: String,
 }
+
+/// Graph API Chat response (from creating a chat)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphChat {
+    pub id: String,
+    pub topic: Option<String>,
+    pub created_date_time: Option<String>,
+    pub chat_type: Option<String>,
+    pub web_url: Option<String>,
+}

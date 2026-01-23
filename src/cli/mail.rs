@@ -100,6 +100,82 @@ pub enum MailSubcommand {
         #[arg(long)]
         file: Option<String>,
     },
+
+    /// Reply to an email
+    Reply {
+        /// Message ID to reply to
+        message_id: String,
+
+        /// Reply body
+        body: String,
+
+        /// Reply to all recipients
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// Forward an email
+    Forward {
+        /// Message ID to forward
+        message_id: String,
+
+        /// Recipient email address(es), comma-separated
+        #[arg(short, long)]
+        to: String,
+
+        /// Optional comment to include
+        #[arg(short, long)]
+        comment: Option<String>,
+    },
+
+    /// Delete an email
+    Delete {
+        /// Message ID to delete
+        message_id: String,
+    },
+
+    /// Move an email to a folder
+    Move {
+        /// Message ID to move
+        message_id: String,
+
+        /// Destination folder (ID or well-known name: archive, deleteditems, drafts, inbox, junkemail, sentitems)
+        #[arg(short, long)]
+        to: String,
+    },
+
+    /// Mark email as read or unread
+    Mark {
+        /// Message ID
+        message_id: String,
+
+        /// Mark as read
+        #[arg(long, conflicts_with = "unread")]
+        read: bool,
+
+        /// Mark as unread
+        #[arg(long, conflicts_with = "read")]
+        unread: bool,
+    },
+
+    /// List attachments of an email
+    Attachments {
+        /// Message ID
+        message_id: String,
+    },
+
+    /// Download an attachment
+    Download {
+        /// Message ID
+        message_id: String,
+
+        /// Attachment ID
+        attachment_id: String,
+
+        /// Output path (default: current directory with original filename)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Tabled)]
@@ -150,6 +226,13 @@ pub async fn execute(cmd: MailCommand, config: &Config, format: OutputFormat) ->
             stdin,
             file,
         } => draft(config, &to, &subject, body, cc, stdin, file, format).await,
+        MailSubcommand::Reply { message_id, body, all } => reply(config, &message_id, &body, all).await,
+        MailSubcommand::Forward { message_id, to, comment } => forward(config, &message_id, &to, comment).await,
+        MailSubcommand::Delete { message_id } => delete(config, &message_id).await,
+        MailSubcommand::Move { message_id, to } => move_mail(config, &message_id, &to).await,
+        MailSubcommand::Mark { message_id, read, unread } => mark(config, &message_id, read, unread).await,
+        MailSubcommand::Attachments { message_id } => attachments(config, &message_id, format).await,
+        MailSubcommand::Download { message_id, attachment_id, output } => download(config, &message_id, &attachment_id, output).await,
     }
 }
 
@@ -432,5 +515,136 @@ async fn draft(
         }
     }
 
+    Ok(())
+}
+
+async fn reply(config: &Config, message_id: &str, body: &str, reply_all: bool) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    client.reply_mail(message_id, body, reply_all).await?;
+
+    if reply_all {
+        print_success("Reply sent to all recipients");
+    } else {
+        print_success("Reply sent");
+    }
+    Ok(())
+}
+
+async fn forward(config: &Config, message_id: &str, to: &str, comment: Option<String>) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    let to_list: Vec<&str> = to.split(',').map(|s| s.trim()).collect();
+    client.forward_mail(message_id, to_list, comment.as_deref()).await?;
+    print_success(&format!("Email forwarded to {}", to));
+    Ok(())
+}
+
+async fn delete(config: &Config, message_id: &str) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    client.delete_mail(message_id).await?;
+    print_success("Email deleted");
+    Ok(())
+}
+
+async fn move_mail(config: &Config, message_id: &str, folder: &str) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+
+    // Map well-known folder names to their IDs
+    let folder_id = match folder.to_lowercase().as_str() {
+        "archive" => "archive",
+        "deleteditems" | "deleted" | "trash" => "deleteditems",
+        "drafts" => "drafts",
+        "inbox" => "inbox",
+        "junkemail" | "junk" | "spam" => "junkemail",
+        "sentitems" | "sent" => "sentitems",
+        _ => folder, // Assume it's a folder ID
+    };
+
+    client.move_mail(message_id, folder_id).await?;
+    print_success(&format!("Email moved to {}", folder));
+    Ok(())
+}
+
+async fn mark(config: &Config, message_id: &str, read: bool, unread: bool) -> Result<()> {
+    if !read && !unread {
+        print_error("Please specify --read or --unread");
+        return Ok(());
+    }
+
+    let client = TeamsClient::new(config)?;
+    let is_read = read; // If --read is set, mark as read; if --unread is set, read=false
+    client.mark_mail(message_id, is_read).await?;
+
+    if is_read {
+        print_success("Email marked as read");
+    } else {
+        print_success("Email marked as unread");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Tabled)]
+struct AttachmentRow {
+    #[tabled(rename = "ID")]
+    id: String,
+    #[tabled(rename = "Name")]
+    name: String,
+    #[tabled(rename = "Type")]
+    content_type: String,
+    #[tabled(rename = "Size")]
+    size: String,
+}
+
+async fn attachments(config: &Config, message_id: &str, format: OutputFormat) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    let attachments = client.get_mail_attachments(message_id).await?;
+
+    match format {
+        OutputFormat::Json => {
+            print_single(&attachments.value, format);
+        }
+        _ => {
+            if attachments.value.is_empty() {
+                println!("No attachments");
+                return Ok(());
+            }
+
+            let rows: Vec<AttachmentRow> = attachments
+                .value
+                .into_iter()
+                .map(|a| AttachmentRow {
+                    id: truncate(&a.id.unwrap_or_default(), 20),
+                    name: a.name,
+                    content_type: a.content_type.unwrap_or_default(),
+                    size: format_size(a.size.unwrap_or(0)),
+                })
+                .collect();
+
+            print_output(&rows, format);
+        }
+    }
+    Ok(())
+}
+
+fn format_size(bytes: i64) -> String {
+    const KB: i64 = 1024;
+    const MB: i64 = KB * 1024;
+
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+async fn download(config: &Config, message_id: &str, attachment_id: &str, output: Option<String>) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    let (filename, content) = client.download_attachment(message_id, attachment_id).await?;
+
+    let output_path = output.unwrap_or_else(|| filename.clone());
+    std::fs::write(&output_path, content)?;
+
+    print_success(&format!("Downloaded {} ({} bytes)", output_path, std::fs::metadata(&output_path)?.len()));
     Ok(())
 }

@@ -54,6 +54,39 @@ pub enum ChatsSubcommand {
         #[arg(short, long)]
         file: Option<String>,
     },
+
+    /// Create a new chat
+    Create {
+        /// User IDs or email addresses to add to the chat, comma-separated
+        #[arg(short, long)]
+        members: String,
+
+        /// Chat topic (for group chats)
+        #[arg(short, long)]
+        topic: Option<String>,
+    },
+
+    /// Reply to a specific message in a thread
+    Reply {
+        /// Chat ID
+        chat_id: String,
+
+        /// Message ID to reply to
+        #[arg(short, long)]
+        message_id: String,
+
+        /// Reply content
+        content: String,
+    },
+
+    /// Delete a message
+    Delete {
+        /// Chat ID
+        chat_id: String,
+
+        /// Message ID to delete
+        message_id: String,
+    },
 }
 
 #[derive(Debug, Serialize, Tabled)]
@@ -95,6 +128,9 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
             stdin,
             file,
         } => send(config, &chat_id, message, stdin, file).await,
+        ChatsSubcommand::Create { members, topic } => create(config, &members, topic, format).await,
+        ChatsSubcommand::Reply { chat_id, message_id, content } => reply(config, &chat_id, &message_id, &content).await,
+        ChatsSubcommand::Delete { chat_id, message_id } => delete(config, &chat_id, &message_id).await,
     }
 }
 
@@ -254,4 +290,41 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+async fn create(config: &Config, members: &str, topic: Option<String>, format: OutputFormat) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    let member_list: Vec<&str> = members.split(',').map(|s| s.trim()).collect();
+
+    let chat = client.create_chat(member_list, topic.as_deref()).await?;
+
+    match format {
+        OutputFormat::Json => {
+            print_single(&chat, format);
+        }
+        _ => {
+            print_success(&format!("Chat created with ID: {}", chat.id));
+            if let Some(t) = chat.topic {
+                println!("Topic: {}", t);
+            }
+            if let Some(url) = chat.web_url {
+                println!("Open in Teams: {}", url);
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn reply(config: &Config, chat_id: &str, message_id: &str, content: &str) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    client.reply_to_message(chat_id, message_id, content).await?;
+    print_success("Reply sent");
+    Ok(())
+}
+
+async fn delete(config: &Config, chat_id: &str, message_id: &str) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    client.delete_message(chat_id, message_id).await?;
+    print_success("Message deleted");
+    Ok(())
 }
