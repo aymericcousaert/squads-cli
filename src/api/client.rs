@@ -357,4 +357,184 @@ impl TeamsClient {
     pub async fn get_activities(&self) -> Result<Conversations> {
         self.get_conversations("48:notifications", None).await
     }
+
+    // ==================== OUTLOOK MAIL ====================
+
+    /// Get mail folders
+    pub async fn get_mail_folders(&self) -> Result<MailFolders> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = "https://graph.microsoft.com/v1.0/me/mailFolders";
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse mail folders")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to get mail folders: {} - {}", status, body))
+        }
+    }
+
+    /// Get mail messages from inbox or a specific folder
+    pub async fn get_mail_messages(&self, folder: Option<&str>, limit: usize) -> Result<MailMessages> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+
+        let url = match folder {
+            Some(f) => format!(
+                "https://graph.microsoft.com/v1.0/me/mailFolders/{}/messages?$top={}&$orderby=receivedDateTime desc",
+                f, limit
+            ),
+            None => format!(
+                "https://graph.microsoft.com/v1.0/me/messages?$top={}&$orderby=receivedDateTime desc",
+                limit
+            ),
+        };
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse mail messages")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to get mail messages: {} - {}", status, body))
+        }
+    }
+
+    /// Get a specific mail message
+    pub async fn get_mail_message(&self, message_id: &str) -> Result<MailMessage> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!("https://graph.microsoft.com/v1.0/me/messages/{}", message_id);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse mail message")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to get mail message: {} - {}", status, body))
+        }
+    }
+
+    /// Send an email
+    pub async fn send_mail(
+        &self,
+        to: Vec<&str>,
+        subject: &str,
+        body: &str,
+        cc: Option<Vec<&str>>,
+    ) -> Result<()> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = "https://graph.microsoft.com/v1.0/me/sendMail";
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let to_recipients: Vec<Recipient> = to
+            .iter()
+            .map(|email| Recipient {
+                email_address: EmailAddress {
+                    address: email.to_string(),
+                    name: None,
+                },
+            })
+            .collect();
+
+        let cc_recipients: Option<Vec<Recipient>> = cc.map(|emails| {
+            emails
+                .iter()
+                .map(|email| Recipient {
+                    email_address: EmailAddress {
+                        address: email.to_string(),
+                        name: None,
+                    },
+                })
+                .collect()
+        });
+
+        let request = SendMailRequest {
+            message: SendMailMessage {
+                subject: subject.to_string(),
+                body: ItemBody {
+                    content_type: "Text".to_string(),
+                    content: body.to_string(),
+                },
+                to_recipients,
+                cc_recipients,
+            },
+            save_to_sent_items: true,
+        };
+
+        let res = self
+            .http
+            .post(url)
+            .headers(headers)
+            .body(serde_json::to_string(&request)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() || res.status().as_u16() == 202 {
+            Ok(())
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to send mail: {} - {}", status, body))
+        }
+    }
+
+    /// Search mail messages
+    pub async fn search_mail(&self, query: &str, limit: usize) -> Result<MailMessages> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/messages?$search=\"{}\"\u{0026}$top={}",
+            query, limit
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse mail search results")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to search mail: {} - {}", status, body))
+        }
+    }
 }

@@ -32,5 +32,6 @@ async fn main() -> Result<()> {
         Commands::Teams(cmd) => cli::teams::execute(cmd, &config, cli.format).await,
         Commands::Users(cmd) => cli::users::execute(cmd, &config, cli.format).await,
         Commands::Activity(cmd) => cli::activity::execute(cmd, &config, cli.format).await,
+        Commands::Mail(cmd) => cli::mail::execute(cmd, &config, cli.format).await,
     }
 }

@@ -1,13 +1,14 @@
 pub mod activity;
 pub mod auth;
 pub mod chats;
+pub mod mail;
 pub mod output;
 pub mod teams;
 pub mod users;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-/// Microsoft Teams CLI for AI agents and terminal users
+/// Microsoft Teams & Outlook CLI for AI agents and terminal users
 #[derive(Parser, Debug)]
 #[command(name = "squads-cli")]
 #[command(author, version, about, long_about = None)]
@@ -36,6 +37,9 @@ pub enum Commands {
 
     /// Activity feed
     Activity(activity::ActivityCommand),
+
+    /// Outlook mail operations
+    Mail(mail::MailCommand),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
