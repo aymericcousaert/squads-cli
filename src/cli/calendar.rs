@@ -6,8 +6,7 @@ use tabled::Tabled;
 use crate::api::TeamsClient;
 use crate::config::Config;
 use crate::types::{
-    AttendeeRequest, CreateEventRequest, DateTimeZone, EmailAddressSimple,
-    EventBody, Location,
+    AttendeeRequest, CreateEventRequest, DateTimeZone, EmailAddressSimple, EventBody, Location,
 };
 
 use super::output::{print_output, print_single, print_success};
