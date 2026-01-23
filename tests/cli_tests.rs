@@ -27,9 +27,7 @@ fn test_version() {
 #[test]
 fn test_unknown_command() {
     let mut cmd = Command::cargo_bin("squads-cli").unwrap();
-    cmd.arg("unknown-command")
-        .assert()
-        .failure();
+    cmd.arg("unknown-command").assert().failure();
 }
 
 /// Test auth subcommand help
@@ -86,9 +84,7 @@ fn test_teams_help() {
 #[test]
 fn test_format_json() {
     let mut cmd = Command::cargo_bin("squads-cli").unwrap();
-    cmd.args(["-f", "json", "--help"])
-        .assert()
-        .success();
+    cmd.args(["-f", "json", "--help"]).assert().success();
 }
 
 /// Test invalid format flag

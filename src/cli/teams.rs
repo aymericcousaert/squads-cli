@@ -171,9 +171,9 @@ async fn messages(
 
                 rows.push(MessageRow {
                     id: msg.id.unwrap_or_default(),
-                    from: msg.im_display_name.unwrap_or_else(|| {
-                        msg.from.unwrap_or_else(|| "Unknown".to_string())
-                    }),
+                    from: msg
+                        .im_display_name
+                        .unwrap_or_else(|| msg.from.unwrap_or_else(|| "Unknown".to_string())),
                     subject: truncate(&subject, 20),
                     time: msg.original_arrival_time.unwrap_or_default(),
                     content: truncate(&content, 40),

@@ -93,7 +93,9 @@ async fn list(
 
 async fn show(config: &Config, user_id: &str, format: OutputFormat) -> Result<()> {
     let client = TeamsClient::new(config)?;
-    let users = client.get_users(Some(&format!("$filter=id eq '{}'", user_id))).await?;
+    let users = client
+        .get_users(Some(&format!("$filter=id eq '{}'", user_id)))
+        .await?;
 
     if let Some(user) = users.value.into_iter().next() {
         print_single(&user, format);

@@ -5,7 +5,10 @@ use anyhow::{anyhow, Context, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Client;
 
-use super::{gen_skype_token, gen_token, renew_refresh_token, SCOPE_CHATSVCAGG, SCOPE_GRAPH, SCOPE_IC3, SCOPE_SPACES};
+use super::{
+    gen_skype_token, gen_token, renew_refresh_token, SCOPE_CHATSVCAGG, SCOPE_GRAPH, SCOPE_IC3,
+    SCOPE_SPACES,
+};
 use crate::cache::{Cache, TOKENS_FILE};
 use crate::config::Config;
 use crate::types::*;
@@ -110,7 +113,11 @@ impl TeamsClient {
                 new_token
             }
             Some(token) => token,
-            None => return Err(anyhow!("Not authenticated. Run 'squads-cli auth login' first.")),
+            None => {
+                return Err(anyhow!(
+                    "Not authenticated. Run 'squads-cli auth login' first."
+                ))
+            }
         };
 
         // Check if we have a valid token for this scope
@@ -247,7 +254,11 @@ impl TeamsClient {
     }
 
     /// Get conversations/messages from a chat
-    pub async fn get_conversations(&self, thread_id: &str, message_id: Option<u64>) -> Result<Conversations> {
+    pub async fn get_conversations(
+        &self,
+        thread_id: &str,
+        message_id: Option<u64>,
+    ) -> Result<Conversations> {
         let token = self.get_token(SCOPE_IC3).await?;
 
         let thread_part = match message_id {
@@ -274,12 +285,20 @@ impl TeamsClient {
         } else {
             let status = res.status();
             let body = res.text().await?;
-            Err(anyhow!("Failed to get conversations: {} - {}", status, body))
+            Err(anyhow!(
+                "Failed to get conversations: {} - {}",
+                status,
+                body
+            ))
         }
     }
 
     /// Get team channel conversations
-    pub async fn get_team_conversations(&self, team_id: &str, channel_id: &str) -> Result<TeamConversations> {
+    pub async fn get_team_conversations(
+        &self,
+        team_id: &str,
+        channel_id: &str,
+    ) -> Result<TeamConversations> {
         let token = self.get_token(SCOPE_CHATSVCAGG).await?;
         let url = format!(
             "https://teams.microsoft.com/api/csa/emea/api/v2/teams/{}/channels/{}",
@@ -300,12 +319,21 @@ impl TeamsClient {
         } else {
             let status = res.status();
             let body = res.text().await?;
-            Err(anyhow!("Failed to get team conversations: {} - {}", status, body))
+            Err(anyhow!(
+                "Failed to get team conversations: {} - {}",
+                status,
+                body
+            ))
         }
     }
 
     /// Send a message to a conversation
-    pub async fn send_message(&self, conversation_id: &str, content: &str, subject: Option<&str>) -> Result<String> {
+    pub async fn send_message(
+        &self,
+        conversation_id: &str,
+        content: &str,
+        subject: Option<&str>,
+    ) -> Result<String> {
         let token = self.get_token(SCOPE_IC3).await?;
         let me = self.get_me().await?;
 
@@ -322,7 +350,9 @@ impl TeamsClient {
 
         // Generate random message ID
         let message_id: u64 = rand::random();
-        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
 
         let body = serde_json::json!({
             "id": "-1",
@@ -390,16 +420,18 @@ impl TeamsClient {
             HeaderValue::from_static("application/json"),
         );
 
-        let chat_type = if members.len() == 1 { "oneOnOne" } else { "group" };
+        let chat_type = if members.len() == 1 {
+            "oneOnOne"
+        } else {
+            "group"
+        };
 
         // Build members list including self
-        let mut all_members: Vec<serde_json::Value> = vec![
-            serde_json::json!({
-                "@odata.type": "#microsoft.graph.aadUserConversationMember",
-                "roles": ["owner"],
-                "user@odata.bind": format!("https://graph.microsoft.com/v1.0/users('{}')", me.id)
-            })
-        ];
+        let mut all_members: Vec<serde_json::Value> = vec![serde_json::json!({
+            "@odata.type": "#microsoft.graph.aadUserConversationMember",
+            "roles": ["owner"],
+            "user@odata.bind": format!("https://graph.microsoft.com/v1.0/users('{}')", me.id)
+        })];
 
         for member in members {
             all_members.push(serde_json::json!({
@@ -464,7 +496,12 @@ impl TeamsClient {
     /// Send a reply in a thread
     /// Note: Graph API replies don't work for 1:1 chats, so we fall back to
     /// sending a regular message with quoted content
-    pub async fn reply_to_message(&self, chat_id: &str, reply_to_id: &str, content: &str) -> Result<()> {
+    pub async fn reply_to_message(
+        &self,
+        chat_id: &str,
+        reply_to_id: &str,
+        content: &str,
+    ) -> Result<()> {
         // First try Graph API (works for channel/group chats)
         let token = self.get_token(SCOPE_GRAPH).await?;
         let url = format!(
@@ -505,13 +542,19 @@ impl TeamsClient {
         if res.status().as_u16() == 405 {
             // Get the original message to quote
             let conversations = self.get_conversations(chat_id, None).await?;
-            let original_msg = conversations.messages.iter()
+            let original_msg = conversations
+                .messages
+                .iter()
                 .find(|m| m.id.as_deref() == Some(reply_to_id));
 
             let quoted_content = if let Some(msg) = original_msg {
-                let sender = msg.im_display_name.clone()
+                let sender = msg
+                    .im_display_name
+                    .clone()
                     .unwrap_or_else(|| "Someone".to_string());
-                let original_content = msg.content.clone()
+                let original_content = msg
+                    .content
+                    .clone()
                     .map(|c| strip_html_simple(&c))
                     .unwrap_or_default();
                 let truncated = if original_content.len() > 100 {
@@ -568,7 +611,11 @@ impl TeamsClient {
     }
 
     /// Get mail messages from inbox or a specific folder
-    pub async fn get_mail_messages(&self, folder: Option<&str>, limit: usize) -> Result<MailMessages> {
+    pub async fn get_mail_messages(
+        &self,
+        folder: Option<&str>,
+        limit: usize,
+    ) -> Result<MailMessages> {
         let token = self.get_token(SCOPE_GRAPH).await?;
 
         let url = match folder {
@@ -596,14 +643,21 @@ impl TeamsClient {
         } else {
             let status = res.status();
             let body = res.text().await?;
-            Err(anyhow!("Failed to get mail messages: {} - {}", status, body))
+            Err(anyhow!(
+                "Failed to get mail messages: {} - {}",
+                status,
+                body
+            ))
         }
     }
 
     /// Get a specific mail message
     pub async fn get_mail_message(&self, message_id: &str) -> Result<MailMessage> {
         let token = self.get_token(SCOPE_GRAPH).await?;
-        let url = format!("https://graph.microsoft.com/v1.0/me/messages/{}", message_id);
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/messages/{}",
+            message_id
+        );
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -839,7 +893,12 @@ impl TeamsClient {
     }
 
     /// Forward an email
-    pub async fn forward_mail(&self, message_id: &str, to: Vec<&str>, comment: Option<&str>) -> Result<()> {
+    pub async fn forward_mail(
+        &self,
+        message_id: &str,
+        to: Vec<&str>,
+        comment: Option<&str>,
+    ) -> Result<()> {
         let token = self.get_token(SCOPE_GRAPH).await?;
         let url = format!(
             "https://graph.microsoft.com/v1.0/me/messages/{}/forward",
@@ -892,7 +951,10 @@ impl TeamsClient {
     /// Delete an email
     pub async fn delete_mail(&self, message_id: &str) -> Result<()> {
         let token = self.get_token(SCOPE_GRAPH).await?;
-        let url = format!("https://graph.microsoft.com/v1.0/me/messages/{}", message_id);
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/messages/{}",
+            message_id
+        );
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -954,7 +1016,10 @@ impl TeamsClient {
     /// Mark email as read or unread
     pub async fn mark_mail(&self, message_id: &str, is_read: bool) -> Result<()> {
         let token = self.get_token(SCOPE_GRAPH).await?;
-        let url = format!("https://graph.microsoft.com/v1.0/me/messages/{}", message_id);
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/messages/{}",
+            message_id
+        );
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -1014,7 +1079,11 @@ impl TeamsClient {
     }
 
     /// Download an attachment
-    pub async fn download_attachment(&self, message_id: &str, attachment_id: &str) -> Result<(String, Vec<u8>)> {
+    pub async fn download_attachment(
+        &self,
+        message_id: &str,
+        attachment_id: &str,
+    ) -> Result<(String, Vec<u8>)> {
         let token = self.get_token(SCOPE_GRAPH).await?;
         let url = format!(
             "https://graph.microsoft.com/v1.0/me/messages/{}/attachments/{}",
@@ -1041,7 +1110,11 @@ impl TeamsClient {
         } else {
             let status = res.status();
             let body = res.text().await?;
-            Err(anyhow!("Failed to download attachment: {} - {}", status, body))
+            Err(anyhow!(
+                "Failed to download attachment: {} - {}",
+                status,
+                body
+            ))
         }
     }
 
@@ -1059,7 +1132,9 @@ impl TeamsClient {
     pub async fn get_calendar_week(&self) -> Result<CalendarEvents> {
         let now = chrono::Utc::now();
         let start = now.format("%Y-%m-%dT00:00:00Z").to_string();
-        let end = (now + chrono::Duration::days(7)).format("%Y-%m-%dT23:59:59Z").to_string();
+        let end = (now + chrono::Duration::days(7))
+            .format("%Y-%m-%dT23:59:59Z")
+            .to_string();
         self.get_calendar_events(&start, &end).await
     }
 
@@ -1085,7 +1160,11 @@ impl TeamsClient {
         } else {
             let status = res.status();
             let body = res.text().await?;
-            Err(anyhow!("Failed to get calendar events: {} - {}", status, body))
+            Err(anyhow!(
+                "Failed to get calendar events: {} - {}",
+                status,
+                body
+            ))
         }
     }
 
@@ -1108,12 +1187,19 @@ impl TeamsClient {
         } else {
             let status = res.status();
             let body = res.text().await?;
-            Err(anyhow!("Failed to get calendar event: {} - {}", status, body))
+            Err(anyhow!(
+                "Failed to get calendar event: {} - {}",
+                status,
+                body
+            ))
         }
     }
 
     /// Create a calendar event
-    pub async fn create_calendar_event(&self, request: CreateEventRequest) -> Result<CalendarEvent> {
+    pub async fn create_calendar_event(
+        &self,
+        request: CreateEventRequest,
+    ) -> Result<CalendarEvent> {
         let token = self.get_token(SCOPE_GRAPH).await?;
         let url = "https://graph.microsoft.com/v1.0/me/events";
 
@@ -1146,15 +1232,27 @@ impl TeamsClient {
     }
 
     /// RSVP to a calendar event
-    pub async fn rsvp_calendar_event(&self, event_id: &str, response: &str, comment: Option<&str>) -> Result<()> {
+    pub async fn rsvp_calendar_event(
+        &self,
+        event_id: &str,
+        response: &str,
+        comment: Option<&str>,
+    ) -> Result<()> {
         let token = self.get_token(SCOPE_GRAPH).await?;
         let endpoint = match response.to_lowercase().as_str() {
             "accept" | "yes" => "accept",
             "decline" | "no" => "decline",
             "tentative" | "maybe" => "tentativelyAccept",
-            _ => return Err(anyhow!("Invalid response. Use: accept, decline, or tentative")),
+            _ => {
+                return Err(anyhow!(
+                    "Invalid response. Use: accept, decline, or tentative"
+                ))
+            }
         };
-        let url = format!("https://graph.microsoft.com/v1.0/me/events/{}/{}", event_id, endpoint);
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/events/{}/{}",
+            event_id, endpoint
+        );
 
         let mut headers = HeaderMap::new();
         headers.insert(

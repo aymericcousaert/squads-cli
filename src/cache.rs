@@ -67,8 +67,9 @@ impl Cache {
     /// Clear all cache files
     pub fn clear(&self) -> Result<()> {
         if self.cache_dir.exists() {
-            fs::remove_dir_all(&self.cache_dir)
-                .with_context(|| format!("Failed to clear cache directory: {:?}", self.cache_dir))?;
+            fs::remove_dir_all(&self.cache_dir).with_context(|| {
+                format!("Failed to clear cache directory: {:?}", self.cache_dir)
+            })?;
             fs::create_dir_all(&self.cache_dir).with_context(|| {
                 format!("Failed to recreate cache directory: {:?}", self.cache_dir)
             })?;

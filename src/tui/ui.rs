@@ -12,9 +12,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(10),      // Main content
-            Constraint::Length(3),    // Input
-            Constraint::Length(1),    // Status bar
+            Constraint::Min(10),   // Main content
+            Constraint::Length(3), // Input
+            Constraint::Length(1), // Status bar
         ])
         .split(f.area());
 
@@ -22,8 +22,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(30),  // Chats
-            Constraint::Percentage(70),  // Messages
+            Constraint::Percentage(30), // Chats
+            Constraint::Percentage(70), // Messages
         ])
         .split(chunks[0]);
 
@@ -54,7 +54,11 @@ fn draw_chats(f: &mut Frame, app: &App, area: Rect) {
                 }
             });
 
-            let unread_marker = if chat.is_read == Some(false) { "● " } else { "  " };
+            let unread_marker = if chat.is_read == Some(false) {
+                "● "
+            } else {
+                "  "
+            };
             let display = format!("{}{}", unread_marker, truncate(&title, 25));
 
             let style = if i == app.selected_chat && is_active {
@@ -75,13 +79,12 @@ fn draw_chats(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let title = format!(" Chats ({}) ", app.chats.len());
-    let chats = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style)
-                .title(title),
-        );
+    let chats = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(title),
+    );
 
     f.render_widget(chats, area);
 }
@@ -123,15 +126,21 @@ fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, msg)| {
-            let sender = msg.im_display_name.clone()
+            let sender = msg
+                .im_display_name
+                .clone()
                 .or_else(|| msg.from.clone())
                 .unwrap_or_else(|| "Unknown".to_string());
 
-            let content = msg.content.clone()
+            let content = msg
+                .content
+                .clone()
                 .map(|c| strip_html(&c))
                 .unwrap_or_default();
 
-            let time = msg.original_arrival_time.clone()
+            let time = msg
+                .original_arrival_time
+                .clone()
                 .map(|t| {
                     // Extract just the time part
                     if t.len() > 16 {
@@ -142,14 +151,20 @@ fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
                 })
                 .unwrap_or_default();
 
-            let is_self = msg.from.as_ref()
+            let is_self = msg
+                .from
+                .as_ref()
                 .map(|f| f.contains("orgid:"))
                 .unwrap_or(false);
 
             let sender_style = if is_self {
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD)
             };
 
             let style = if i == app.selected_message && is_active {
@@ -192,7 +207,11 @@ fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(border_style)
-                .title(format!(" {} ({}) ", truncate(&chat_title, 30), app.messages.len())),
+                .title(format!(
+                    " {} ({}) ",
+                    truncate(&chat_title, 30),
+                    app.messages.len()
+                )),
         )
         .highlight_style(Style::default()); // Already handled per-item
 
@@ -264,16 +283,10 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     // Show cursor in insert mode - use character count, not byte length for UTF-8
     if app.mode == Mode::Insert {
         let char_count = app.input.chars().count() as u16;
-        f.set_cursor_position((
-            area.x + char_count + 1,
-            area.y + 1,
-        ));
+        f.set_cursor_position((area.x + char_count + 1, area.y + 1));
     } else if app.mode == Mode::Command {
         let char_count = app.command_input.chars().count() as u16;
-        f.set_cursor_position((
-            area.x + char_count + 2,
-            area.y + 1,
-        ));
+        f.set_cursor_position((area.x + char_count + 2, area.y + 1));
     }
 }
 
@@ -308,8 +321,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(unread_info, Style::default().fg(Color::Yellow)),
     ]);
 
-    let status_bar = Paragraph::new(status)
-        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    let status_bar =
+        Paragraph::new(status).style(Style::default().bg(Color::DarkGray).fg(Color::White));
 
     f.render_widget(status_bar, area);
 }

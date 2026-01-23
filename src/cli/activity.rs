@@ -58,13 +58,13 @@ async fn list(config: &Config, limit: usize, format: OutputFormat) -> Result<()>
 
             Some(ActivityRow {
                 activity_type: activity.activity_type,
-                from: activity.source_user_im_display_name.unwrap_or_else(|| {
-                    activity.source_user_id.clone()
-                }),
+                from: activity
+                    .source_user_im_display_name
+                    .unwrap_or_else(|| activity.source_user_id.clone()),
                 preview: truncate(&activity.message_preview, 40),
-                thread: activity.source_thread_topic.unwrap_or_else(|| {
-                    truncate(&activity.source_thread_id, 20)
-                }),
+                thread: activity
+                    .source_thread_topic
+                    .unwrap_or_else(|| truncate(&activity.source_thread_id, 20)),
                 time: activity.activity_timestamp,
             })
         })

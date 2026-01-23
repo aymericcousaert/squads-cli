@@ -134,8 +134,15 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
             markdown,
         } => send(config, &chat_id, message, stdin, file, markdown).await,
         ChatsSubcommand::Create { members, topic } => create(config, &members, topic, format).await,
-        ChatsSubcommand::Reply { chat_id, message_id, content } => reply(config, &chat_id, &message_id, &content).await,
-        ChatsSubcommand::Delete { chat_id, message_id } => delete(config, &chat_id, &message_id).await,
+        ChatsSubcommand::Reply {
+            chat_id,
+            message_id,
+            content,
+        } => reply(config, &chat_id, &message_id, &content).await,
+        ChatsSubcommand::Delete {
+            chat_id,
+            message_id,
+        } => delete(config, &chat_id, &message_id).await,
     }
 }
 
@@ -187,14 +194,22 @@ async fn show(config: &Config, chat_id: &str, format: OutputFormat) -> Result<()
     Ok(())
 }
 
-async fn messages(config: &Config, chat_id: &str, limit: usize, format: OutputFormat) -> Result<()> {
+async fn messages(
+    config: &Config,
+    chat_id: &str,
+    limit: usize,
+    format: OutputFormat,
+) -> Result<()> {
     let client = TeamsClient::new(config)?;
     let conversations = client.get_conversations(chat_id, None).await?;
 
     let filtered_messages: Vec<_> = conversations
         .messages
         .into_iter()
-        .filter(|m| m.message_type.as_deref() == Some("RichText/Html") || m.message_type.as_deref() == Some("Text"))
+        .filter(|m| {
+            m.message_type.as_deref() == Some("RichText/Html")
+                || m.message_type.as_deref() == Some("Text")
+        })
         .take(limit)
         .collect();
 
@@ -207,16 +222,13 @@ async fn messages(config: &Config, chat_id: &str, limit: usize, format: OutputFo
             let rows: Vec<MessageRow> = filtered_messages
                 .into_iter()
                 .map(|msg| {
-                    let content = msg
-                        .content
-                        .map(|c| strip_html(&c))
-                        .unwrap_or_default();
+                    let content = msg.content.map(|c| strip_html(&c)).unwrap_or_default();
 
                     MessageRow {
                         id: msg.id.unwrap_or_default(),
-                        from: msg.im_display_name.unwrap_or_else(|| {
-                            msg.from.unwrap_or_else(|| "Unknown".to_string())
-                        }),
+                        from: msg
+                            .im_display_name
+                            .unwrap_or_else(|| msg.from.unwrap_or_else(|| "Unknown".to_string())),
                         time: msg.original_arrival_time.unwrap_or_default(),
                         content: truncate(&content, 50),
                     }
@@ -315,7 +327,12 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-async fn create(config: &Config, members: &str, topic: Option<String>, format: OutputFormat) -> Result<()> {
+async fn create(
+    config: &Config,
+    members: &str,
+    topic: Option<String>,
+    format: OutputFormat,
+) -> Result<()> {
     let client = TeamsClient::new(config)?;
     let member_list: Vec<&str> = members.split(',').map(|s| s.trim()).collect();
 
@@ -340,7 +357,9 @@ async fn create(config: &Config, members: &str, topic: Option<String>, format: O
 
 async fn reply(config: &Config, chat_id: &str, message_id: &str, content: &str) -> Result<()> {
     let client = TeamsClient::new(config)?;
-    client.reply_to_message(chat_id, message_id, content).await?;
+    client
+        .reply_to_message(chat_id, message_id, content)
+        .await?;
     print_success("Reply sent");
     Ok(())
 }

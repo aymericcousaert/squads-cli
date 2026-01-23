@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 
 /// Application configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub auth: AuthConfig,
@@ -84,16 +84,6 @@ impl Default for ApiConfig {
         Self {
             region: default_region(),
             timeout: default_timeout(),
-        }
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            auth: AuthConfig::default(),
-            output: OutputConfig::default(),
-            api: ApiConfig::default(),
         }
     }
 }

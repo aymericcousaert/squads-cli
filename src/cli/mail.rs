@@ -226,13 +226,31 @@ pub async fn execute(cmd: MailCommand, config: &Config, format: OutputFormat) ->
             stdin,
             file,
         } => draft(config, &to, &subject, body, cc, stdin, file, format).await,
-        MailSubcommand::Reply { message_id, body, all } => reply(config, &message_id, &body, all).await,
-        MailSubcommand::Forward { message_id, to, comment } => forward(config, &message_id, &to, comment).await,
+        MailSubcommand::Reply {
+            message_id,
+            body,
+            all,
+        } => reply(config, &message_id, &body, all).await,
+        MailSubcommand::Forward {
+            message_id,
+            to,
+            comment,
+        } => forward(config, &message_id, &to, comment).await,
         MailSubcommand::Delete { message_id } => delete(config, &message_id).await,
         MailSubcommand::Move { message_id, to } => move_mail(config, &message_id, &to).await,
-        MailSubcommand::Mark { message_id, read, unread } => mark(config, &message_id, read, unread).await,
-        MailSubcommand::Attachments { message_id } => attachments(config, &message_id, format).await,
-        MailSubcommand::Download { message_id, attachment_id, output } => download(config, &message_id, &attachment_id, output).await,
+        MailSubcommand::Mark {
+            message_id,
+            read,
+            unread,
+        } => mark(config, &message_id, read, unread).await,
+        MailSubcommand::Attachments { message_id } => {
+            attachments(config, &message_id, format).await
+        }
+        MailSubcommand::Download {
+            message_id,
+            attachment_id,
+            output,
+        } => download(config, &message_id, &attachment_id, output).await,
     }
 }
 
@@ -255,7 +273,12 @@ async fn folders(config: &Config, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-async fn list(config: &Config, folder: Option<String>, limit: usize, format: OutputFormat) -> Result<()> {
+async fn list(
+    config: &Config,
+    folder: Option<String>,
+    limit: usize,
+    format: OutputFormat,
+) -> Result<()> {
     let client = TeamsClient::new(config)?;
     let messages = client.get_mail_messages(folder.as_deref(), limit).await?;
 
@@ -272,11 +295,7 @@ async fn list(config: &Config, folder: Option<String>, limit: usize, format: Out
                 .map(|m| {
                     let from = m
                         .from
-                        .map(|r| {
-                            r.email_address
-                                .name
-                                .unwrap_or(r.email_address.address)
-                        })
+                        .map(|r| r.email_address.name.unwrap_or(r.email_address.address))
                         .unwrap_or_else(|| "Unknown".to_string());
 
                     MailRow {
@@ -386,10 +405,16 @@ async fn send(
 
     // Parse recipients
     let to_list: Vec<&str> = to.split(',').map(|s| s.trim()).collect();
-    let cc_list: Option<Vec<String>> = cc.as_ref().map(|c| c.split(',').map(|s| s.trim().to_string()).collect());
-    let cc_refs: Option<Vec<&str>> = cc_list.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect());
+    let cc_list: Option<Vec<String>> = cc
+        .as_ref()
+        .map(|c| c.split(',').map(|s| s.trim().to_string()).collect());
+    let cc_refs: Option<Vec<&str>> = cc_list
+        .as_ref()
+        .map(|v| v.iter().map(|s| s.as_str()).collect());
 
-    client.send_mail(to_list, subject, &content, cc_refs).await?;
+    client
+        .send_mail(to_list, subject, &content, cc_refs)
+        .await?;
     print_success("Email sent successfully");
 
     Ok(())
@@ -405,11 +430,7 @@ async fn search(config: &Config, query: &str, limit: usize, format: OutputFormat
         .map(|m| {
             let from = m
                 .from
-                .map(|r| {
-                    r.email_address
-                        .name
-                        .unwrap_or(r.email_address.address)
-                })
+                .map(|r| r.email_address.name.unwrap_or(r.email_address.address))
                 .unwrap_or_else(|| "Unknown".to_string());
 
             MailRow {
@@ -463,6 +484,7 @@ fn strip_html(s: &str) -> String {
         .to_string()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn draft(
     config: &Config,
     to: &str,
@@ -496,17 +518,26 @@ async fn draft(
 
     // Parse recipients
     let to_list: Vec<&str> = to.split(',').map(|s| s.trim()).collect();
-    let cc_list: Option<Vec<String>> = cc.as_ref().map(|c| c.split(',').map(|s| s.trim().to_string()).collect());
-    let cc_refs: Option<Vec<&str>> = cc_list.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect());
+    let cc_list: Option<Vec<String>> = cc
+        .as_ref()
+        .map(|c| c.split(',').map(|s| s.trim().to_string()).collect());
+    let cc_refs: Option<Vec<&str>> = cc_list
+        .as_ref()
+        .map(|v| v.iter().map(|s| s.as_str()).collect());
 
-    let draft = client.create_draft(to_list, subject, &content, cc_refs).await?;
+    let draft = client
+        .create_draft(to_list, subject, &content, cc_refs)
+        .await?;
 
     match format {
         OutputFormat::Json => {
             print_single(&draft, format);
         }
         _ => {
-            print_success(&format!("Draft created with ID: {}", draft.id.unwrap_or_default()));
+            print_success(&format!(
+                "Draft created with ID: {}",
+                draft.id.unwrap_or_default()
+            ));
             println!("To: {}", to);
             println!("Subject: {}", subject);
             if let Some(link) = draft.web_link {
@@ -530,10 +561,17 @@ async fn reply(config: &Config, message_id: &str, body: &str, reply_all: bool) -
     Ok(())
 }
 
-async fn forward(config: &Config, message_id: &str, to: &str, comment: Option<String>) -> Result<()> {
+async fn forward(
+    config: &Config,
+    message_id: &str,
+    to: &str,
+    comment: Option<String>,
+) -> Result<()> {
     let client = TeamsClient::new(config)?;
     let to_list: Vec<&str> = to.split(',').map(|s| s.trim()).collect();
-    client.forward_mail(message_id, to_list, comment.as_deref()).await?;
+    client
+        .forward_mail(message_id, to_list, comment.as_deref())
+        .await?;
     print_success(&format!("Email forwarded to {}", to));
     Ok(())
 }
@@ -638,13 +676,24 @@ fn format_size(bytes: i64) -> String {
     }
 }
 
-async fn download(config: &Config, message_id: &str, attachment_id: &str, output: Option<String>) -> Result<()> {
+async fn download(
+    config: &Config,
+    message_id: &str,
+    attachment_id: &str,
+    output: Option<String>,
+) -> Result<()> {
     let client = TeamsClient::new(config)?;
-    let (filename, content) = client.download_attachment(message_id, attachment_id).await?;
+    let (filename, content) = client
+        .download_attachment(message_id, attachment_id)
+        .await?;
 
     let output_path = output.unwrap_or_else(|| filename.clone());
     std::fs::write(&output_path, content)?;
 
-    print_success(&format!("Downloaded {} ({} bytes)", output_path, std::fs::metadata(&output_path)?.len()));
+    print_success(&format!(
+        "Downloaded {} ({} bytes)",
+        output_path,
+        std::fs::metadata(&output_path)?.len()
+    ));
     Ok(())
 }

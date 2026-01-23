@@ -8,15 +8,12 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{
-    backend::CrosstermBackend,
-    Terminal,
-};
+use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::sync::Mutex;
 
 use crate::api::TeamsClient;
 use crate::config::Config;
-use crate::types::{Chat, Message, MailMessage};
+use crate::types::{Chat, MailMessage, Message};
 
 use super::ui;
 
@@ -84,7 +81,9 @@ impl App {
         // Load chats
         match self.client.get_user_details().await {
             Ok(details) => {
-                self.unread_messages = details.chats.iter()
+                self.unread_messages = details
+                    .chats
+                    .iter()
                     .filter(|c| c.is_read == Some(false))
                     .count();
                 self.chats = details.chats;
@@ -97,7 +96,9 @@ impl App {
         // Load emails (just count unread)
         match self.client.get_mail_messages(Some("inbox"), 50).await {
             Ok(msgs) => {
-                self.unread_emails = msgs.value.iter()
+                self.unread_emails = msgs
+                    .value
+                    .iter()
                     .filter(|m| m.is_read != Some(true))
                     .count();
                 self.emails = msgs.value;
@@ -126,11 +127,12 @@ impl App {
             match self.client.get_conversations(&chat.id, None).await {
                 Ok(convs) => {
                     // API returns newest first, so take 50 most recent then reverse for display
-                    let mut msgs: Vec<_> = convs.messages
+                    let mut msgs: Vec<_> = convs
+                        .messages
                         .into_iter()
                         .filter(|m| {
                             m.message_type.as_deref() == Some("RichText/Html")
-                            || m.message_type.as_deref() == Some("Text")
+                                || m.message_type.as_deref() == Some("Text")
                         })
                         .take(50)
                         .collect();
@@ -184,7 +186,10 @@ impl App {
 
     pub fn previous_chat(&mut self) {
         if !self.chats.is_empty() {
-            self.selected_chat = self.selected_chat.checked_sub(1).unwrap_or(self.chats.len() - 1);
+            self.selected_chat = self
+                .selected_chat
+                .checked_sub(1)
+                .unwrap_or(self.chats.len() - 1);
         }
     }
 
@@ -290,20 +295,16 @@ async fn run_app(
                             KeyCode::Char('?') => {
                                 app.status_message = "j/k: navigate | Enter: select | i: compose | Tab: switch panel | r: refresh | q: quit".to_string();
                             }
-                            KeyCode::Char('j') | KeyCode::Down => {
-                                match app.active_panel {
-                                    Panel::Chats => app.next_chat(),
-                                    Panel::Messages => app.next_message(),
-                                    _ => {}
-                                }
-                            }
-                            KeyCode::Char('k') | KeyCode::Up => {
-                                match app.active_panel {
-                                    Panel::Chats => app.previous_chat(),
-                                    Panel::Messages => app.previous_message(),
-                                    _ => {}
-                                }
-                            }
+                            KeyCode::Char('j') | KeyCode::Down => match app.active_panel {
+                                Panel::Chats => app.next_chat(),
+                                Panel::Messages => app.next_message(),
+                                _ => {}
+                            },
+                            KeyCode::Char('k') | KeyCode::Up => match app.active_panel {
+                                Panel::Chats => app.previous_chat(),
+                                Panel::Messages => app.previous_message(),
+                                _ => {}
+                            },
                             KeyCode::Char('g') => {
                                 // Go to top
                                 match app.active_panel {
@@ -315,8 +316,12 @@ async fn run_app(
                             KeyCode::Char('G') => {
                                 // Go to bottom
                                 match app.active_panel {
-                                    Panel::Chats => app.selected_chat = app.chats.len().saturating_sub(1),
-                                    Panel::Messages => app.selected_message = app.messages.len().saturating_sub(1),
+                                    Panel::Chats => {
+                                        app.selected_chat = app.chats.len().saturating_sub(1)
+                                    }
+                                    Panel::Messages => {
+                                        app.selected_message = app.messages.len().saturating_sub(1)
+                                    }
                                     _ => {}
                                 }
                             }
@@ -342,7 +347,8 @@ async fn run_app(
                             KeyCode::Char('i') => {
                                 app.mode = Mode::Insert;
                                 app.active_panel = Panel::Input;
-                                app.status_message = "-- INSERT -- (Esc to cancel, Enter to send)".to_string();
+                                app.status_message =
+                                    "-- INSERT -- (Esc to cancel, Enter to send)".to_string();
                             }
                             KeyCode::Char('r') => {
                                 app.load_data().await?;
@@ -390,42 +396,41 @@ async fn run_app(
                             _ => {}
                         }
                     }
-                    Mode::Command => {
-                        match key.code {
-                            KeyCode::Esc => {
-                                app.mode = Mode::Normal;
-                                app.command_input.clear();
-                                app.status_message = "Press ? for help".to_string();
-                            }
-                            KeyCode::Enter => {
-                                let cmd = app.command_input.clone();
-                                app.command_input.clear();
-                                app.mode = Mode::Normal;
+                    Mode::Command => match key.code {
+                        KeyCode::Esc => {
+                            app.mode = Mode::Normal;
+                            app.command_input.clear();
+                            app.status_message = "Press ? for help".to_string();
+                        }
+                        KeyCode::Enter => {
+                            let cmd = app.command_input.clone();
+                            app.command_input.clear();
+                            app.mode = Mode::Normal;
 
-                                match cmd.as_str() {
-                                    "q" | "quit" => app.should_quit = true,
-                                    "r" | "refresh" => {
-                                        app.load_data().await?;
-                                    }
-                                    "mail" | "m" => {
-                                        app.status_message = format!("{} unread emails", app.unread_emails);
-                                    }
-                                    _ => {
-                                        app.status_message = format!("Unknown command: {}", cmd);
-                                    }
+                            match cmd.as_str() {
+                                "q" | "quit" => app.should_quit = true,
+                                "r" | "refresh" => {
+                                    app.load_data().await?;
+                                }
+                                "mail" | "m" => {
+                                    app.status_message =
+                                        format!("{} unread emails", app.unread_emails);
+                                }
+                                _ => {
+                                    app.status_message = format!("Unknown command: {}", cmd);
                                 }
                             }
-                            KeyCode::Backspace => {
-                                app.command_input.pop();
-                                app.status_message = format!(":{}", app.command_input);
-                            }
-                            KeyCode::Char(c) => {
-                                app.command_input.push(c);
-                                app.status_message = format!(":{}", app.command_input);
-                            }
-                            _ => {}
                         }
-                    }
+                        KeyCode::Backspace => {
+                            app.command_input.pop();
+                            app.status_message = format!(":{}", app.command_input);
+                        }
+                        KeyCode::Char(c) => {
+                            app.command_input.push(c);
+                            app.status_message = format!(":{}", app.command_input);
+                        }
+                        _ => {}
+                    },
                 }
 
                 if app.should_quit {

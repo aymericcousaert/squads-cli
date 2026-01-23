@@ -129,7 +129,12 @@ pub async fn execute(cmd: CalendarCommand, config: &Config, format: OutputFormat
             location,
             teams,
             body,
-        } => create(config, &title, &start, &end, attendees, location, teams, body, format).await,
+        } => {
+            create(
+                config, &title, &start, &end, attendees, location, teams, body, format,
+            )
+            .await
+        }
         CalendarSubcommand::Rsvp {
             event_id,
             response,
@@ -289,6 +294,7 @@ async fn show(config: &Config, event_id: &str, format: OutputFormat) -> Result<(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create(
     config: &Config,
     title: &str,
@@ -371,7 +377,12 @@ async fn create(
     Ok(())
 }
 
-async fn rsvp(config: &Config, event_id: &str, response: &str, comment: Option<String>) -> Result<()> {
+async fn rsvp(
+    config: &Config,
+    event_id: &str,
+    response: &str,
+    comment: Option<String>,
+) -> Result<()> {
     let client = TeamsClient::new(config)?;
     client
         .rsvp_calendar_event(event_id, response, comment.as_deref())
@@ -400,18 +411,17 @@ async fn join(config: &Config, event_id: Option<String>, format: OutputFormat) -
         events
             .value
             .into_iter()
-            .filter(|e| e.is_online_meeting == Some(true))
-            .filter(|e| {
-                e.start
-                    .as_ref()
-                    .map(|s| {
-                        chrono::DateTime::parse_from_rfc3339(&format!("{}Z", s.date_time))
-                            .map(|dt| dt > now - chrono::Duration::minutes(30))
-                            .unwrap_or(false)
-                    })
-                    .unwrap_or(false)
+            .find(|e| {
+                e.is_online_meeting == Some(true)
+                    && e.start
+                        .as_ref()
+                        .map(|s| {
+                            chrono::DateTime::parse_from_rfc3339(&format!("{}Z", s.date_time))
+                                .map(|dt| dt > now - chrono::Duration::minutes(30))
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false)
             })
-            .next()
             .ok_or_else(|| anyhow::anyhow!("No upcoming Teams meetings found today"))?
     };
 

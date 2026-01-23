@@ -98,7 +98,11 @@ pub async fn gen_refresh_token_from_device_code(
     if !res.status().is_success() {
         let status = res.status();
         let body = res.text().await?;
-        return Err(anyhow!("Device code not yet authorized: {} - {}", status, body));
+        return Err(anyhow!(
+            "Device code not yet authorized: {} - {}",
+            status,
+            body
+        ));
     }
 
     let token_data: HashMap<String, Value> = res.json().await?;
@@ -121,7 +125,10 @@ pub async fn gen_refresh_token_from_device_code(
 }
 
 /// Renew a refresh token
-pub async fn renew_refresh_token(refresh_token: &AccessToken, tenant_id: &str) -> Result<AccessToken> {
+pub async fn renew_refresh_token(
+    refresh_token: &AccessToken,
+    tenant_id: &str,
+) -> Result<AccessToken> {
     let url = format!(
         "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
         tenant_id
@@ -147,7 +154,11 @@ pub async fn renew_refresh_token(refresh_token: &AccessToken, tenant_id: &str) -
     if !res.status().is_success() {
         let status = res.status();
         let body = res.text().await?;
-        return Err(anyhow!("Failed to renew refresh token: {} - {}", status, body));
+        return Err(anyhow!(
+            "Failed to renew refresh token: {} - {}",
+            status,
+            body
+        ));
     }
 
     let token_data: HashMap<String, Value> = res.json().await?;
@@ -199,7 +210,12 @@ pub async fn gen_token(
     if !res.status().is_success() {
         let status = res.status();
         let body = res.text().await?;
-        return Err(anyhow!("Failed to generate token for {}: {} - {}", scope, status, body));
+        return Err(anyhow!(
+            "Failed to generate token for {}: {} - {}",
+            scope,
+            status,
+            body
+        ));
     }
 
     let token_data: HashMap<String, Value> = res.json().await?;
@@ -242,7 +258,11 @@ pub async fn gen_skype_token(access_token: &AccessToken) -> Result<AccessToken> 
     if !res.status().is_success() {
         let status = res.status();
         let body = res.text().await?;
-        return Err(anyhow!("Failed to generate Skype token: {} - {}", status, body));
+        return Err(anyhow!(
+            "Failed to generate Skype token: {} - {}",
+            status,
+            body
+        ));
     }
 
     let token_data: HashMap<String, Value> = res.json().await?;
