@@ -186,29 +186,41 @@ async fn messages(config: &Config, chat_id: &str, limit: usize, format: OutputFo
     let client = TeamsClient::new(config)?;
     let conversations = client.get_conversations(chat_id, None).await?;
 
-    let rows: Vec<MessageRow> = conversations
+    let filtered_messages: Vec<_> = conversations
         .messages
         .into_iter()
         .filter(|m| m.message_type.as_deref() == Some("RichText/Html") || m.message_type.as_deref() == Some("Text"))
         .take(limit)
-        .map(|msg| {
-            let content = msg
-                .content
-                .map(|c| strip_html(&c))
-                .unwrap_or_default();
-
-            MessageRow {
-                id: msg.id.unwrap_or_default(),
-                from: msg.im_display_name.unwrap_or_else(|| {
-                    msg.from.unwrap_or_else(|| "Unknown".to_string())
-                }),
-                time: msg.original_arrival_time.unwrap_or_default(),
-                content: truncate(&content, 50),
-            }
-        })
         .collect();
 
-    print_output(&rows, format);
+    match format {
+        OutputFormat::Json => {
+            // Return full message data for AI agents
+            print_single(&filtered_messages, format);
+        }
+        _ => {
+            let rows: Vec<MessageRow> = filtered_messages
+                .into_iter()
+                .map(|msg| {
+                    let content = msg
+                        .content
+                        .map(|c| strip_html(&c))
+                        .unwrap_or_default();
+
+                    MessageRow {
+                        id: msg.id.unwrap_or_default(),
+                        from: msg.im_display_name.unwrap_or_else(|| {
+                            msg.from.unwrap_or_else(|| "Unknown".to_string())
+                        }),
+                        time: msg.original_arrival_time.unwrap_or_default(),
+                        content: truncate(&content, 50),
+                    }
+                })
+                .collect();
+
+            print_output(&rows, format);
+        }
+    }
     Ok(())
 }
 

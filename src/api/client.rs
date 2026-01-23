@@ -17,6 +17,27 @@ fn get_epoch_s() -> u64 {
         .as_secs()
 }
 
+/// Simple HTML stripper for quoted messages
+fn strip_html_simple(s: &str) -> String {
+    let mut result = String::new();
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => result.push(c),
+            _ => {}
+        }
+    }
+    result
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .trim()
+        .to_string()
+}
+
 /// Microsoft Teams API client
 pub struct TeamsClient {
     tokens: Arc<RwLock<TokenStore>>,
@@ -440,8 +461,11 @@ impl TeamsClient {
         }
     }
 
-    /// Send a reply in a thread (using Graph API for proper threading)
+    /// Send a reply in a thread
+    /// Note: Graph API replies don't work for 1:1 chats, so we fall back to
+    /// sending a regular message with quoted content
     pub async fn reply_to_message(&self, chat_id: &str, reply_to_id: &str, content: &str) -> Result<()> {
+        // First try Graph API (works for channel/group chats)
         let token = self.get_token(SCOPE_GRAPH).await?;
         let url = format!(
             "https://graph.microsoft.com/v1.0/chats/{}/messages/{}/replies",
@@ -473,12 +497,44 @@ impl TeamsClient {
             .await?;
 
         if res.status().is_success() || res.status().as_u16() == 201 {
-            Ok(())
-        } else {
-            let status = res.status();
-            let body = res.text().await?;
-            Err(anyhow!("Failed to reply to message: {} - {}", status, body))
+            return Ok(());
         }
+
+        // If 405 Method Not Allowed, fall back to regular message with quote
+        // This happens for 1:1 (Direct) chats where Graph API replies aren't supported
+        if res.status().as_u16() == 405 {
+            // Get the original message to quote
+            let conversations = self.get_conversations(chat_id, None).await?;
+            let original_msg = conversations.messages.iter()
+                .find(|m| m.id.as_deref() == Some(reply_to_id));
+
+            let quoted_content = if let Some(msg) = original_msg {
+                let sender = msg.im_display_name.clone()
+                    .unwrap_or_else(|| "Someone".to_string());
+                let original_content = msg.content.clone()
+                    .map(|c| strip_html_simple(&c))
+                    .unwrap_or_default();
+                let truncated = if original_content.len() > 100 {
+                    format!("{}...", &original_content[..100])
+                } else {
+                    original_content
+                };
+                format!(
+                    "<blockquote><b>{}</b>: {}</blockquote><p>{}</p>",
+                    sender, truncated, content
+                )
+            } else {
+                format!("<p>{}</p>", content)
+            };
+
+            // Send as regular message using Teams Chat Service API
+            self.send_message(chat_id, &quoted_content, None).await?;
+            return Ok(());
+        }
+
+        let status = res.status();
+        let body = res.text().await?;
+        Err(anyhow!("Failed to reply to message: {} - {}", status, body))
     }
 
     /// Get activity feed
