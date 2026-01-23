@@ -601,7 +601,11 @@ impl TeamsClient {
             _ => reaction, // Fallback to raw string
         };
 
-        let action = if remove { "unsetReaction" } else { "setReaction" };
+        let action = if remove {
+            "unsetReaction"
+        } else {
+            "setReaction"
+        };
         let url = format!(
             "https://graph.microsoft.com/v1.0/chats/{}/messages/{}/{}",
             conversation_id, message_id, action
@@ -634,7 +638,12 @@ impl TeamsClient {
         } else {
             let status = res.status();
             let body = res.text().await?;
-            Err(anyhow!("Failed to {} reaction: {} - {}", if remove { "remove" } else { "send" }, status, body))
+            Err(anyhow!(
+                "Failed to {} reaction: {} - {}",
+                if remove { "remove" } else { "send" },
+                status,
+                body
+            ))
         }
     }
 
