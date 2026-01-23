@@ -3,6 +3,7 @@ pub mod auth;
 pub mod calendar;
 pub mod chats;
 pub mod completions;
+pub mod install;
 pub mod mail;
 pub mod output;
 pub mod search;
@@ -52,6 +53,9 @@ pub enum Commands {
 
     /// Generate shell completions
     Completions(completions::CompletionsCommand),
+
+    /// Install squads-cli to ~/.local/bin
+    Install,
 
     /// Interactive terminal UI (requires --features tui)
     #[cfg(feature = "tui")]
