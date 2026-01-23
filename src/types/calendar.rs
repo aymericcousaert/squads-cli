@@ -85,7 +85,29 @@ pub struct CalendarEvents {
     pub value: Vec<CalendarEvent>,
 }
 
-/// Request to create an event
+/// Calendar info from Microsoft Graph
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Calendar {
+    pub id: String,
+    pub name: Option<String>,
+    pub color: Option<String>,
+    pub hex_color: Option<String>,
+    pub is_default_calendar: Option<bool>,
+    pub change_key: Option<String>,
+    pub can_share: Option<bool>,
+    pub can_view_private_items: Option<bool>,
+    pub can_edit: Option<bool>,
+    pub owner: Option<Organizer>,
+}
+
+/// Calendar list response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalendarList {
+    #[serde(rename = "@odata.context")]
+    pub context: Option<String>,
+    pub value: Vec<Calendar>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateEventRequest {

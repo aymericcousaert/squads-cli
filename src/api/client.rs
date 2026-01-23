@@ -1139,6 +1139,218 @@ impl TeamsClient {
     }
 
     /// Get calendar events in a date range
+    /// Get schedule/free-busy for a list of users
+    pub async fn get_schedule(
+        &self,
+        users: Vec<&str>,
+        start: &str,
+        end: &str,
+    ) -> Result<serde_json::Value> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = "https://graph.microsoft.com/v1.0/me/calendar/getSchedule";
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+        headers.insert(
+            HeaderName::from_static("prefer"),
+            HeaderValue::from_static("outlook.timezone=\"UTC\""),
+        );
+
+        let body = serde_json::json!({
+            "schedules": users,
+            "startTime": {
+                "dateTime": start,
+                "timeZone": "UTC"
+            },
+            "endTime": {
+                "dateTime": end,
+                "timeZone": "UTC"
+            },
+            "availabilityViewInterval": 30
+        });
+
+        let res = self
+            .http
+            .post(url)
+            .headers(headers)
+            .body(serde_json::to_string(&body)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            Ok(serde_json::from_str(&body)?)
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to get schedule: {} - {}", status, body))
+        }
+    }
+    pub async fn get_calendar_groups(&self) -> Result<serde_json::Value> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = "https://graph.microsoft.com/v1.0/me/calendarGroups";
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(url).headers(headers).send().await?;
+        let body = res.text().await?;
+        Ok(serde_json::from_str(&body)?)
+    }
+
+    /// Get all accessible calendars including those in groups
+    pub async fn get_all_calendars(&self) -> Result<Vec<Calendar>> {
+        let mut all_calendars = Vec::new();
+
+        // 1. Get primary calendars
+        if let Ok(calendars) = self.get_calendars().await {
+            all_calendars.extend(calendars.value);
+        }
+
+        // 2. Get calendars from groups
+        if let Ok(groups) = self.get_calendar_groups().await {
+            if let Some(groups_val) = groups.get("value").and_then(|v| v.as_array()) {
+                for group in groups_val {
+                    if let Some(group_id) = group.get("id").and_then(|i| i.as_str()) {
+                        let group_name = group
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("Unknown Group");
+                        if let Ok(group_calendars) = self.get_group_calendars(group_id).await {
+                            for mut c in group_calendars.value {
+                                if let Some(ref mut name) = c.name {
+                                    *name = format!("{} ({})", name, group_name);
+                                }
+                                all_calendars.push(c);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(all_calendars)
+    }
+
+    /// Get calendars for a specific group
+    pub async fn get_group_calendars(&self, group_id: &str) -> Result<CalendarList> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/calendarGroups/{}/calendars",
+            group_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(url).headers(headers).send().await?;
+        let body = res.text().await?;
+        Ok(serde_json::from_str(&body)?)
+    }
+    pub async fn get_calendars(&self) -> Result<CalendarList> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = "https://graph.microsoft.com/v1.0/me/calendars";
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse calendars")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to get calendars: {} - {}", status, body))
+        }
+    }
+
+    /// Get calendar events for a specific user (if shared)
+    pub async fn get_user_calendar_view(
+        &self,
+        user_id: &str,
+        start: &str,
+        end: &str,
+    ) -> Result<CalendarEvents> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/users/{}/calendar/calendarView?startDateTime={}&endDateTime={}&$orderby=start/dateTime&$top=50",
+            user_id, start, end
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse user calendar events")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!(
+                "Failed to get user calendar events: {} - {}",
+                status,
+                body
+            ))
+        }
+    }
+    pub async fn get_calendar_events_for_id(
+        &self,
+        calendar_id: &str,
+        start: &str,
+        end: &str,
+    ) -> Result<CalendarEvents> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/calendars/{}/calendarView?startDateTime={}&endDateTime={}&$orderby=start/dateTime&$top=50",
+            calendar_id, start, end
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse calendar events")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!(
+                "Failed to get calendar events: {} - {}",
+                status,
+                body
+            ))
+        }
+    }
+
+    /// Get calendar events in a date range for primary calendar
     pub async fn get_calendar_events(&self, start: &str, end: &str) -> Result<CalendarEvents> {
         let token = self.get_token(SCOPE_GRAPH).await?;
         let url = format!(
