@@ -257,29 +257,13 @@ async fn send(
 
     let client = TeamsClient::new(config)?;
 
-    // Convert plain text to simple HTML
-    let mut html_content = html_escape(&content);
-    
-    if markdown {
-        // Convert newlines to <br/>
-        html_content = html_content.replace('\n', "<br/>");
-        
-        // Simple bold support: **text** -> <b>text</b>
-        // This is a naive implementation but works for simple cases
-        while let Some(start) = html_content.find("**") {
-            if let Some(end) = html_content[start + 2..].find("**") {
-                let end_pos = start + 2 + end;
-                let before = &html_content[..start];
-                let bold_text = &html_content[start + 2..end_pos];
-                let after = &html_content[end_pos + 2..];
-                html_content = format!("{}<b>{}</b>{}", before, bold_text, after);
-            } else {
-                break;
-            }
-        }
-    }
-
-    let html_body = format!("<p>{}</p>", html_content);
+    let html_body = if markdown {
+        // Use markdown crate for proper MD -> HTML conversion
+        markdown::to_html(&content)
+    } else {
+        // Convert plain text to simple HTML
+        format!("<p>{}</p>", html_escape(&content))
+    };
 
     client.send_message(chat_id, &html_body, None).await?;
     print_success("Message sent successfully");
