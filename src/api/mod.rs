@@ -1,3 +1,6 @@
+// Suppress warnings for API constants and functions kept for future use
+#![allow(dead_code)]
+
 pub mod auth;
 pub mod client;
 

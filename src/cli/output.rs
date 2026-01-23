@@ -67,6 +67,7 @@ pub fn print_info(message: &str) {
 }
 
 /// Print warning message
+#[allow(dead_code)]
 pub fn print_warning(message: &str) {
     println!("{} {}", "⚠".yellow(), message);
 }

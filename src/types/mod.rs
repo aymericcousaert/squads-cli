@@ -1,3 +1,6 @@
+// Suppress warnings for deserialization helpers and types kept for future use
+#![allow(dead_code)]
+
 mod calendar;
 mod mail;
 mod message;

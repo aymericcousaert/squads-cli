@@ -131,6 +131,7 @@ impl Config {
     }
 
     /// Save configuration to file
+    #[allow(dead_code)]
     pub fn save(&self) -> Result<()> {
         let config_path = Self::config_path()?;
 

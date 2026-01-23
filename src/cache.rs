@@ -1,3 +1,6 @@
+// Suppress warnings for future-use functionality
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 use serde::{de::DeserializeOwned, Serialize};
 use std::fs;
