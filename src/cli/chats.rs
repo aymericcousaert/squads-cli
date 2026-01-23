@@ -53,6 +53,10 @@ pub enum ChatsSubcommand {
         /// Read message from file
         #[arg(long)]
         file: Option<String>,
+
+        /// Enable Markdown formatting (converts ** to bold and \n to line breaks)
+        #[arg(short, long)]
+        markdown: bool,
     },
 
     /// Create a new chat
@@ -127,7 +131,8 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
             message,
             stdin,
             file,
-        } => send(config, &chat_id, message, stdin, file).await,
+            markdown,
+        } => send(config, &chat_id, message, stdin, file, markdown).await,
         ChatsSubcommand::Create { members, topic } => create(config, &members, topic, format).await,
         ChatsSubcommand::Reply { chat_id, message_id, content } => reply(config, &chat_id, &message_id, &content).await,
         ChatsSubcommand::Delete { chat_id, message_id } => delete(config, &chat_id, &message_id).await,
@@ -230,6 +235,7 @@ async fn send(
     message: Option<String>,
     stdin: bool,
     file: Option<String>,
+    markdown: bool,
 ) -> Result<()> {
     let content = if let Some(msg) = message {
         msg
@@ -252,9 +258,30 @@ async fn send(
     let client = TeamsClient::new(config)?;
 
     // Convert plain text to simple HTML
-    let html_content = format!("<p>{}</p>", html_escape(&content));
+    let mut html_content = html_escape(&content);
+    
+    if markdown {
+        // Convert newlines to <br/>
+        html_content = html_content.replace('\n', "<br/>");
+        
+        // Simple bold support: **text** -> <b>text</b>
+        // This is a naive implementation but works for simple cases
+        while let Some(start) = html_content.find("**") {
+            if let Some(end) = html_content[start + 2..].find("**") {
+                let end_pos = start + 2 + end;
+                let before = &html_content[..start];
+                let bold_text = &html_content[start + 2..end_pos];
+                let after = &html_content[end_pos + 2..];
+                html_content = format!("{}<b>{}</b>{}", before, bold_text, after);
+            } else {
+                break;
+            }
+        }
+    }
 
-    client.send_message(chat_id, &html_content, None).await?;
+    let html_body = format!("<p>{}</p>", html_content);
+
+    client.send_message(chat_id, &html_body, None).await?;
     print_success("Message sent successfully");
 
     Ok(())
