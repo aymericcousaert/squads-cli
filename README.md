@@ -184,6 +184,9 @@ echo "fpath+=~/.zfunc" >> ~/.zshrc
 # For Bash
 squads-cli completions bash > squads-cli.bash
 source squads-cli.bash
+
+# For Fish
+squads-cli completions fish > ~/.config/fish/completions/squads-cli.fish
 ```
 
 ## Output Formats
