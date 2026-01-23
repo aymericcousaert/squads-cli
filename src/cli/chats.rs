@@ -213,8 +213,10 @@ async fn send(
 }
 
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() > max_len {
-        format!("{}...", &s[..max_len - 3])
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() > max_len {
+        let truncated: String = chars[..max_len.saturating_sub(3)].iter().collect();
+        format!("{}...", truncated)
     } else {
         s.to_string()
     }
