@@ -207,6 +207,18 @@ impl App {
     pub fn scroll_up(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_sub(1);
     }
+
+    pub fn delete_word(&mut self) {
+        // Delete characters backwards until we hit a word boundary
+        // First, trim trailing spaces
+        while self.input.ends_with(' ') {
+            self.input.pop();
+        }
+        // Then delete until next space or beginning
+        while !self.input.is_empty() && !self.input.ends_with(' ') {
+            self.input.pop();
+        }
+    }
 }
 
 fn html_escape(s: &str) -> String {
@@ -357,7 +369,20 @@ async fn run_app(
                                 app.mode = Mode::Normal;
                             }
                             KeyCode::Backspace => {
-                                app.input.pop();
+                                if key.modifiers.contains(KeyModifiers::ALT) {
+                                    // Alt+Backspace: delete word
+                                    app.delete_word();
+                                } else {
+                                    app.input.pop();
+                                }
+                            }
+                            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                // Ctrl+W: delete word (vim style)
+                                app.delete_word();
+                            }
+                            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                // Ctrl+U: clear line
+                                app.input.clear();
                             }
                             KeyCode::Char(c) => {
                                 app.input.push(c);

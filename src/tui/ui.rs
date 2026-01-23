@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 
@@ -113,6 +113,11 @@ fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    // Calculate available width for content (area width - borders - padding)
+    let content_width = area.width.saturating_sub(4) as usize;
+    // Header takes about 25 chars (time + sender)
+    let msg_width = content_width.saturating_sub(25);
+
     let items: Vec<ListItem> = app
         .messages
         .iter()
@@ -147,21 +152,40 @@ fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
             };
 
-            let line = Line::from(vec![
-                Span::styled(format!("{} ", time), Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{}: ", truncate(&sender, 15)), sender_style),
-                Span::raw(truncate(&content, 120)),
-            ]);
-
             let style = if i == app.selected_message && is_active {
                 Style::default().bg(Color::DarkGray)
             } else {
                 Style::default()
             };
 
-            ListItem::new(line).style(style)
+            // Wrap content into multiple lines if needed
+            let content_lines = wrap_text(&content, msg_width.max(20));
+            let mut lines: Vec<Line> = Vec::new();
+
+            for (line_idx, line_content) in content_lines.iter().enumerate() {
+                if line_idx == 0 {
+                    // First line with time and sender
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{} ", time), Style::default().fg(Color::DarkGray)),
+                        Span::styled(format!("{}: ", truncate(&sender, 15)), sender_style),
+                        Span::raw(line_content.clone()),
+                    ]));
+                } else {
+                    // Continuation lines with indent
+                    lines.push(Line::from(vec![
+                        Span::raw("                         "), // Indent to align with message content
+                        Span::raw(line_content.clone()),
+                    ]));
+                }
+            }
+
+            ListItem::new(lines).style(style)
         })
         .collect();
+
+    // Use ListState for proper scrolling
+    let mut list_state = ListState::default();
+    list_state.select(Some(app.selected_message));
 
     let messages = List::new(items)
         .block(
@@ -169,9 +193,41 @@ fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(border_style)
                 .title(format!(" {} ({}) ", truncate(&chat_title, 30), app.messages.len())),
-        );
+        )
+        .highlight_style(Style::default()); // Already handled per-item
 
-    f.render_widget(messages, area);
+    f.render_stateful_widget(messages, area, &mut list_state);
+}
+
+fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+
+    for word in text.split_whitespace() {
+        if current_line.is_empty() {
+            current_line = word.to_string();
+        } else if current_line.chars().count() + 1 + word.chars().count() <= max_width {
+            current_line.push(' ');
+            current_line.push_str(word);
+        } else {
+            lines.push(current_line);
+            current_line = word.to_string();
+        }
+    }
+
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+
+    if lines.is_empty() {
+        vec![String::new()]
+    } else {
+        lines
+    }
 }
 
 fn draw_input(f: &mut Frame, app: &App, area: Rect) {
