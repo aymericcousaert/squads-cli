@@ -6,8 +6,11 @@ A command-line interface for Microsoft Teams, designed for AI agents (Claude Cod
 
 ## Features
 
+- **Full chat support**: List, read, and send messages (with Markdown support)
+- **Outlook Mail integration**: Full support for listing, reading, sending, drafting, and managing emails
+- **Calendar management**: View schedules, check availability (Free/Busy), and manage events (including shared calendars)
+- **Interactive TUI**: A terminal user interface for a more visual experience
 - **CLI-first design**: JSON output format optimized for AI agents
-- **Full chat support**: List, read, and send messages
 - **Teams support**: Browse teams and channels
 - **User management**: Search and view user profiles
 - **Activity feed**: View notifications and mentions
@@ -54,8 +57,49 @@ squads-cli chats send <chat-id> "Hello, World!"
 # Send from stdin (useful for AI agents)
 echo "Hello" | squads-cli chats send <chat-id> --stdin
 
-# Send from file
-squads-cli chats send <chat-id> --file message.txt
+# Send a message with Markdown support
+squads-cli chats send <chat-id> "**Bold** and _italic_" --markdown
+
+# Reply to a message (with citation fallback for 1:1 chats)
+squads-cli chats reply <chat-id> --message-id <msg-id> "My reply"
+
+### Outlook Mail
+
+```bash
+# List emails
+squads-cli mail list --limit 10
+
+# Send an email
+squads-cli mail send --to "user@example.com" --subject "Hello" "Email body"
+
+# Create a draft
+squads-cli mail draft --to "user@example.com" --subject "Draft" "Content"
+
+# Manage emails (reply, forward, delete, mark as read)
+squads-cli mail mark <msg-id> --read
+```
+
+### Calendar
+
+```bash
+# View today's events
+squads-cli calendar today
+
+# List all accessible calendars (including shared and groups)
+squads-cli calendar calendars
+
+# Check availability (Free/Busy) for a contact
+squads-cli calendar free-busy --users "aymeric@example.com"
+
+# View shared calendar
+squads-cli calendar today --user-id <user-id-or-email>
+```
+
+### Interactive TUI
+
+```bash
+# Launch the terminal UI
+squads-cli tui
 ```
 
 ### Teams

@@ -549,13 +549,16 @@ This approach delivers maximum value for AI agents quickly while maintaining ext
 
 ---
 
-## 9. Next Steps
+## 9. Next Steps (Current Status)
 
-1. [ ] Set up project structure
-2. [ ] Port authentication code from Squads
-3. [ ] Implement core API client
-4. [ ] Add CLI argument parsing
-5. [ ] Implement basic commands
-6. [ ] Add real-time features
-7. [ ] (Optional) Implement TUI
-8. [ ] Documentation and testing
+1. [x] Set up project structure
+2. [x] Port authentication code from Squads
+3. [x] Implement core API client
+4. [x] Add CLI argument parsing
+5. [x] Implement basic commands (Teams, Chats, Users)
+6. [x] Implement Outlook Mail integration
+7. [x] Implement Calendar management and Free/Busy
+8. [x] Implement basic TUI
+9. [ ] Add real-time features (WebSocket/Trouter)
+10. [x] Support Markdown in chat messages
+11. [ ] Shell completions and further polish
