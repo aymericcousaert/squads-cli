@@ -1,8 +1,10 @@
+mod calendar;
 mod mail;
 mod message;
 mod team;
 mod user;
 
+pub use calendar::*;
 pub use mail::*;
 pub use message::*;
 pub use team::*;

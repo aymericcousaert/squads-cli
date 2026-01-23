@@ -36,6 +36,7 @@ async fn main() -> Result<()> {
         Commands::Users(cmd) => cli::users::execute(cmd, &config, cli.format).await,
         Commands::Activity(cmd) => cli::activity::execute(cmd, &config, cli.format).await,
         Commands::Mail(cmd) => cli::mail::execute(cmd, &config, cli.format).await,
+        Commands::Calendar(cmd) => cli::calendar::execute(cmd, &config, cli.format).await,
         #[cfg(feature = "tui")]
         Commands::Tui => tui::run(&config).await,
     }

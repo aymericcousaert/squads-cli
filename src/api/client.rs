@@ -1044,4 +1044,169 @@ impl TeamsClient {
             Err(anyhow!("Failed to download attachment: {} - {}", status, body))
         }
     }
+
+    // ==================== CALENDAR ====================
+
+    /// Get calendar events for today
+    pub async fn get_calendar_today(&self) -> Result<CalendarEvents> {
+        let now = chrono::Utc::now();
+        let start = now.format("%Y-%m-%dT00:00:00Z").to_string();
+        let end = now.format("%Y-%m-%dT23:59:59Z").to_string();
+        self.get_calendar_events(&start, &end).await
+    }
+
+    /// Get calendar events for this week
+    pub async fn get_calendar_week(&self) -> Result<CalendarEvents> {
+        let now = chrono::Utc::now();
+        let start = now.format("%Y-%m-%dT00:00:00Z").to_string();
+        let end = (now + chrono::Duration::days(7)).format("%Y-%m-%dT23:59:59Z").to_string();
+        self.get_calendar_events(&start, &end).await
+    }
+
+    /// Get calendar events in a date range
+    pub async fn get_calendar_events(&self, start: &str, end: &str) -> Result<CalendarEvents> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/calendarView?startDateTime={}&endDateTime={}&$orderby=start/dateTime&$top=50",
+            start, end
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse calendar events")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to get calendar events: {} - {}", status, body))
+        }
+    }
+
+    /// Get a specific calendar event
+    pub async fn get_calendar_event(&self, event_id: &str) -> Result<CalendarEvent> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!("https://graph.microsoft.com/v1.0/me/events/{}", event_id);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse calendar event")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to get calendar event: {} - {}", status, body))
+        }
+    }
+
+    /// Create a calendar event
+    pub async fn create_calendar_event(&self, request: CreateEventRequest) -> Result<CalendarEvent> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = "https://graph.microsoft.com/v1.0/me/events";
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let res = self
+            .http
+            .post(url)
+            .headers(headers)
+            .body(serde_json::to_string(&request)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() || res.status().as_u16() == 201 {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse created event")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to create event: {} - {}", status, body))
+        }
+    }
+
+    /// RSVP to a calendar event
+    pub async fn rsvp_calendar_event(&self, event_id: &str, response: &str, comment: Option<&str>) -> Result<()> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let endpoint = match response.to_lowercase().as_str() {
+            "accept" | "yes" => "accept",
+            "decline" | "no" => "decline",
+            "tentative" | "maybe" => "tentativelyAccept",
+            _ => return Err(anyhow!("Invalid response. Use: accept, decline, or tentative")),
+        };
+        let url = format!("https://graph.microsoft.com/v1.0/me/events/{}/{}", event_id, endpoint);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let body = serde_json::json!({
+            "comment": comment.unwrap_or(""),
+            "sendResponse": true
+        });
+
+        let res = self
+            .http
+            .post(&url)
+            .headers(headers)
+            .body(serde_json::to_string(&body)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() || res.status().as_u16() == 202 {
+            Ok(())
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to RSVP: {} - {}", status, body))
+        }
+    }
+
+    /// Delete a calendar event
+    pub async fn delete_calendar_event(&self, event_id: &str) -> Result<()> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!("https://graph.microsoft.com/v1.0/me/events/{}", event_id);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.delete(&url).headers(headers).send().await?;
+
+        if res.status().is_success() || res.status().as_u16() == 204 {
+            Ok(())
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to delete event: {} - {}", status, body))
+        }
+    }
 }

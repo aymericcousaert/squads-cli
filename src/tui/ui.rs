@@ -150,7 +150,7 @@ fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
             let line = Line::from(vec![
                 Span::styled(format!("{} ", time), Style::default().fg(Color::DarkGray)),
                 Span::styled(format!("{}: ", truncate(&sender, 15)), sender_style),
-                Span::raw(truncate(&content, 60)),
+                Span::raw(truncate(&content, 120)),
             ]);
 
             let style = if i == app.selected_message && is_active {
@@ -205,15 +205,17 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
 
     f.render_widget(input, area);
 
-    // Show cursor in insert mode
+    // Show cursor in insert mode - use character count, not byte length for UTF-8
     if app.mode == Mode::Insert {
+        let char_count = app.input.chars().count() as u16;
         f.set_cursor_position((
-            area.x + app.input.len() as u16 + 1,
+            area.x + char_count + 1,
             area.y + 1,
         ));
     } else if app.mode == Mode::Command {
+        let char_count = app.command_input.chars().count() as u16;
         f.set_cursor_position((
-            area.x + app.command_input.len() as u16 + 2,
+            area.x + char_count + 2,
             area.y + 1,
         ));
     }
@@ -267,6 +269,51 @@ fn truncate(s: &str, max_len: usize) -> String {
 }
 
 fn strip_html(s: &str) -> String {
+    // Handle blockquotes first - extract quoted content
+    let mut result = s.to_string();
+
+    // Simple blockquote handling: extract content between <blockquote> and </blockquote>
+    if result.contains("<blockquote") {
+        // Find and replace blockquotes with "> quote" format
+        let mut processed = String::new();
+        let mut remaining = result.as_str();
+
+        while let Some(start_idx) = remaining.find("<blockquote") {
+            // Add content before blockquote
+            processed.push_str(&remaining[..start_idx]);
+
+            // Find end of blockquote
+            if let Some(end_idx) = remaining[start_idx..].find("</blockquote>") {
+                let quote_content = &remaining[start_idx..start_idx + end_idx];
+                // Strip tags from quote content and add as "> quote"
+                let clean_quote = strip_tags_only(quote_content);
+                if !clean_quote.trim().is_empty() {
+                    processed.push_str(&format!("「{}」 ", truncate_quote(&clean_quote, 40)));
+                }
+                remaining = &remaining[start_idx + end_idx + 13..]; // 13 = </blockquote>
+            } else {
+                remaining = &remaining[start_idx..];
+                break;
+            }
+        }
+        processed.push_str(remaining);
+        result = processed;
+    }
+
+    // Now strip remaining HTML tags
+    strip_tags_only(&result)
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn strip_tags_only(s: &str) -> String {
     let mut result = String::new();
     let mut in_tag = false;
 
@@ -283,15 +330,16 @@ fn strip_html(s: &str) -> String {
             _ => {}
         }
     }
-
     result
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+}
+
+fn truncate_quote(s: &str, max_len: usize) -> String {
+    let trimmed = s.trim();
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() > max_len {
+        let truncated: String = chars[..max_len.saturating_sub(3)].iter().collect();
+        format!("{}...", truncated)
+    } else {
+        trimmed.to_string()
+    }
 }

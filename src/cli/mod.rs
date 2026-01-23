@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod auth;
+pub mod calendar;
 pub mod chats;
 pub mod mail;
 pub mod output;
@@ -40,6 +41,9 @@ pub enum Commands {
 
     /// Outlook mail operations
     Mail(mail::MailCommand),
+
+    /// Outlook calendar operations
+    Calendar(calendar::CalendarCommand),
 
     /// Interactive terminal UI (requires --features tui)
     #[cfg(feature = "tui")]

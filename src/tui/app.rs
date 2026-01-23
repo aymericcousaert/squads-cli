@@ -163,8 +163,8 @@ impl App {
                 Ok(_) => {
                     self.status_message = "Message sent! Refreshing...".to_string();
                     self.input.clear();
-                    // Small delay to let the API process the message
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    // Delay to let the API process the message (increased for reliability)
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                     // Reload messages
                     self.load_messages().await?;
                 }
