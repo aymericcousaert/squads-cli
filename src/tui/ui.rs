@@ -1,0 +1,297 @@
+use ratatui::{
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    Frame,
+};
+
+use super::app::{App, Mode, Panel};
+
+pub fn draw(f: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(10),      // Main content
+            Constraint::Length(3),    // Input
+            Constraint::Length(1),    // Status bar
+        ])
+        .split(f.area());
+
+    // Split main area into chats and messages
+    let main_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(30),  // Chats
+            Constraint::Percentage(70),  // Messages
+        ])
+        .split(chunks[0]);
+
+    draw_chats(f, app, main_chunks[0]);
+    draw_messages(f, app, main_chunks[1]);
+    draw_input(f, app, chunks[1]);
+    draw_status(f, app, chunks[2]);
+}
+
+fn draw_chats(f: &mut Frame, app: &App, area: Rect) {
+    let is_active = app.active_panel == Panel::Chats;
+    let border_style = if is_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let items: Vec<ListItem> = app
+        .chats
+        .iter()
+        .enumerate()
+        .map(|(i, chat)| {
+            let title = chat.title.clone().unwrap_or_else(|| {
+                if chat.members.len() == 2 {
+                    "Direct Chat".to_string()
+                } else {
+                    format!("Group ({} members)", chat.members.len())
+                }
+            });
+
+            let unread_marker = if chat.is_read == Some(false) { "● " } else { "  " };
+            let display = format!("{}{}", unread_marker, truncate(&title, 25));
+
+            let style = if i == app.selected_chat && is_active {
+                Style::default()
+                    .bg(Color::Cyan)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else if i == app.selected_chat {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else if chat.is_read == Some(false) {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default()
+            };
+
+            ListItem::new(display).style(style)
+        })
+        .collect();
+
+    let title = format!(" Chats ({}) ", app.chats.len());
+    let chats = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(title),
+        );
+
+    f.render_widget(chats, area);
+}
+
+fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
+    let is_active = app.active_panel == Panel::Messages;
+    let border_style = if is_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let chat_title = app
+        .chats
+        .get(app.selected_chat)
+        .and_then(|c| c.title.clone())
+        .unwrap_or_else(|| "Messages".to_string());
+
+    if app.messages.is_empty() {
+        let empty = Paragraph::new("No messages. Press Enter on a chat to load messages.")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(border_style)
+                    .title(format!(" {} ", chat_title)),
+            );
+        f.render_widget(empty, area);
+        return;
+    }
+
+    let items: Vec<ListItem> = app
+        .messages
+        .iter()
+        .enumerate()
+        .map(|(i, msg)| {
+            let sender = msg.im_display_name.clone()
+                .or_else(|| msg.from.clone())
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            let content = msg.content.clone()
+                .map(|c| strip_html(&c))
+                .unwrap_or_default();
+
+            let time = msg.original_arrival_time.clone()
+                .map(|t| {
+                    // Extract just the time part
+                    if t.len() > 16 {
+                        t[11..16].to_string()
+                    } else {
+                        t
+                    }
+                })
+                .unwrap_or_default();
+
+            let is_self = msg.from.as_ref()
+                .map(|f| f.contains("orgid:"))
+                .unwrap_or(false);
+
+            let sender_style = if is_self {
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
+            };
+
+            let line = Line::from(vec![
+                Span::styled(format!("{} ", time), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{}: ", truncate(&sender, 15)), sender_style),
+                Span::raw(truncate(&content, 60)),
+            ]);
+
+            let style = if i == app.selected_message && is_active {
+                Style::default().bg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
+
+            ListItem::new(line).style(style)
+        })
+        .collect();
+
+    let messages = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(format!(" {} ({}) ", truncate(&chat_title, 30), app.messages.len())),
+        );
+
+    f.render_widget(messages, area);
+}
+
+fn draw_input(f: &mut Frame, app: &App, area: Rect) {
+    let is_active = app.active_panel == Panel::Input || app.mode == Mode::Insert;
+    let border_style = if is_active {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let input_title = match app.mode {
+        Mode::Insert => " Compose (Enter to send, Esc to cancel) ",
+        Mode::Command => " Command ",
+        Mode::Normal => " Press 'i' to compose ",
+    };
+
+    let display_text = match app.mode {
+        Mode::Command => format!(":{}", app.command_input),
+        _ => app.input.clone(),
+    };
+
+    let input = Paragraph::new(display_text.as_str())
+        .style(Style::default())
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(input_title),
+        )
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(input, area);
+
+    // Show cursor in insert mode
+    if app.mode == Mode::Insert {
+        f.set_cursor_position((
+            area.x + app.input.len() as u16 + 1,
+            area.y + 1,
+        ));
+    } else if app.mode == Mode::Command {
+        f.set_cursor_position((
+            area.x + app.command_input.len() as u16 + 2,
+            area.y + 1,
+        ));
+    }
+}
+
+fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+    let mode_indicator = match app.mode {
+        Mode::Normal => "",
+        Mode::Insert => " INSERT ",
+        Mode::Command => " COMMAND ",
+    };
+
+    let mode_style = match app.mode {
+        Mode::Normal => Style::default(),
+        Mode::Insert => Style::default().bg(Color::Green).fg(Color::Black),
+        Mode::Command => Style::default().bg(Color::Yellow).fg(Color::Black),
+    };
+
+    let unread_info = if app.unread_emails > 0 || app.unread_messages > 0 {
+        format!(
+            " | 📧 {} unread | 💬 {} unread",
+            app.unread_emails, app.unread_messages
+        )
+    } else {
+        String::new()
+    };
+
+    let loading_indicator = if app.loading { " ⏳ " } else { "" };
+
+    let status = Line::from(vec![
+        Span::styled(mode_indicator, mode_style),
+        Span::raw(loading_indicator),
+        Span::raw(&app.status_message),
+        Span::styled(unread_info, Style::default().fg(Color::Yellow)),
+    ]);
+
+    let status_bar = Paragraph::new(status)
+        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+
+    f.render_widget(status_bar, area);
+}
+
+fn truncate(s: &str, max_len: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() > max_len {
+        let truncated: String = chars[..max_len.saturating_sub(3)].iter().collect();
+        format!("{}...", truncated)
+    } else {
+        s.to_string()
+    }
+}
+
+fn strip_html(s: &str) -> String {
+    let mut result = String::new();
+    let mut in_tag = false;
+
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            '\n' | '\r' => {
+                if !in_tag {
+                    result.push(' ');
+                }
+            }
+            _ if !in_tag => result.push(c),
+            _ => {}
+        }
+    }
+
+    result
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}

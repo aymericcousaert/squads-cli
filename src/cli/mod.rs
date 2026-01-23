@@ -40,6 +40,10 @@ pub enum Commands {
 
     /// Outlook mail operations
     Mail(mail::MailCommand),
+
+    /// Interactive terminal UI (requires --features tui)
+    #[cfg(feature = "tui")]
+    Tui,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]

@@ -4,9 +4,12 @@ mod cli;
 mod config;
 mod types;
 
+#[cfg(feature = "tui")]
+mod tui;
+
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, Commands, OutputFormat};
+use cli::{Cli, Commands};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -33,5 +36,7 @@ async fn main() -> Result<()> {
         Commands::Users(cmd) => cli::users::execute(cmd, &config, cli.format).await,
         Commands::Activity(cmd) => cli::activity::execute(cmd, &config, cli.format).await,
         Commands::Mail(cmd) => cli::mail::execute(cmd, &config, cli.format).await,
+        #[cfg(feature = "tui")]
+        Commands::Tui => tui::run(&config).await,
     }
 }
