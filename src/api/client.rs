@@ -776,6 +776,35 @@ impl TeamsClient {
         }
     }
 
+    /// Search calendar events specifically
+    pub async fn search_calendar(&self, query: &str, limit: usize) -> Result<CalendarEvents> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        // Calendar events don't support $search well, so we use $filter with contains
+        // Using lowercase for case-insensitive contains if supported by the endpoint,
+        // or just providing the query as is.
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/events?$filter=contains(subject, '{}')&$top={}",
+            query, limit
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse calendar search results")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to search calendar: {} - {}", status, body))
+        }
+    }
+
     /// Create a draft email message
     pub async fn create_draft(
         &self,

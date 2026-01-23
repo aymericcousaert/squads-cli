@@ -4,6 +4,7 @@ pub mod calendar;
 pub mod chats;
 pub mod mail;
 pub mod output;
+pub mod search;
 pub mod teams;
 pub mod users;
 
@@ -44,6 +45,9 @@ pub enum Commands {
 
     /// Outlook calendar operations
     Calendar(calendar::CalendarCommand),
+
+    /// Global search across mail, teams, and calendar
+    Search(search::SearchCommand),
 
     /// Interactive terminal UI (requires --features tui)
     #[cfg(feature = "tui")]

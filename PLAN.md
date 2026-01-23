@@ -561,4 +561,5 @@ This approach delivers maximum value for AI agents quickly while maintaining ext
 8. [x] Implement basic TUI
 9. [ ] Add real-time features (WebSocket/Trouter)
 10. [x] Support Markdown in chat messages
-11. [ ] Shell completions and further polish
+11. [x] Implement Global Search (Mail, Calendar)
+12. [ ] Shell completions and further polish

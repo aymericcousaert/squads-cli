@@ -6,6 +6,7 @@ A command-line interface for Microsoft Teams, designed for AI agents (Claude Cod
 
 ## Features
 
+- **Global search**: Search across your Mail and Calendar with a single command
 - **Full chat support**: List, read, and send messages (with Markdown support)
 - **Outlook Mail integration**: Full support for listing, reading, sending, drafting, and managing emails
 - **Calendar management**: View schedules, check availability (Free/Busy), and manage events (including shared calendars)
@@ -42,6 +43,18 @@ squads-cli auth status
 squads-cli auth logout
 ```
 
+### Global Search
+
+Search across Mail and Calendar simultaneously.
+
+```bash
+# Search for a keyword
+squads-cli search "keyword"
+
+# Limit results and choose format
+squads-cli search "project" --limit 10 --format json
+```
+
 ### Chats
 
 ```bash
@@ -69,14 +82,27 @@ squads-cli chats reply <chat-id> --message-id <msg-id> "My reply"
 # List emails
 squads-cli mail list --limit 10
 
+# Read an email
+squads-cli mail read <msg-id>
+
+# Search emails specifically
+squads-cli mail search "invoice"
+
 # Send an email
 squads-cli mail send --to "user@example.com" --subject "Hello" "Email body"
 
 # Create a draft
 squads-cli mail draft --to "user@example.com" --subject "Draft" "Content"
 
-# Manage emails (reply, forward, delete, mark as read)
+# Manage emails
+squads-cli mail reply <msg-id> "My reply"
+squads-cli mail forward <msg-id> --to "other@example.com"
 squads-cli mail mark <msg-id> --read
+squads-cli mail delete <msg-id>
+
+# Attachments
+squads-cli mail attachments <msg-id>
+squads-cli mail download <msg-id> <attachment-id> --output "file.pdf"
 ```
 
 ### Calendar
@@ -84,6 +110,12 @@ squads-cli mail mark <msg-id> --read
 ```bash
 # View today's events
 squads-cli calendar today
+
+# View events for the next 7 days
+squads-cli calendar week
+
+# List events in a specific range
+squads-cli calendar list --start 2024-01-01 --end 2024-01-31
 
 # List all accessible calendars (including shared and groups)
 squads-cli calendar calendars
@@ -93,6 +125,11 @@ squads-cli calendar free-busy --users "aymeric@example.com"
 
 # View shared calendar
 squads-cli calendar today --user-id <user-id-or-email>
+
+# Manage events
+squads-cli calendar show <event-id>
+squads-cli calendar rsvp <event-id> accept --comment "I'll be there"
+squads-cli calendar delete <event-id>
 ```
 
 ### Interactive TUI
