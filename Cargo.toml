@@ -55,6 +55,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 default = []
 tui = ["ratatui", "crossterm"]
 
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+
 [[bin]]
 name = "squads-cli"
 path = "src/main.rs"
