@@ -6,11 +6,14 @@ use tabled::Tabled;
 use crate::api::TeamsClient;
 use crate::config::Config;
 use crate::types::{
-    AttendeeRequest, CreateEventRequest, DateTimeZone, EmailAddressSimple, EventBody, Location,
+    AttendeeRequest, CalendarEvent, CreateEventRequest, DateTimeZone, EmailAddressSimple,
+    EventBody, Location,
 };
 
 use super::output::{print_output, print_single, print_success};
 use super::OutputFormat;
+
+use chrono::{DateTime, Local};
 
 #[derive(Args, Debug)]
 pub struct CalendarCommand {
@@ -296,15 +299,7 @@ fn display_events(events: Vec<crate::types::CalendarEvent>, format: OutputFormat
                 .map(|e| {
                     let time = e
                         .start
-                        .map(|s| {
-                            // Extract just the date and time
-                            let dt = &s.date_time;
-                            if dt.len() >= 16 {
-                                format!("{} {}", &dt[5..10], &dt[11..16])
-                            } else {
-                                dt.clone()
-                            }
-                        })
+                        .map(|s| format_local_time(&s.date_time, "%m-%d %H:%M"))
                         .unwrap_or_default();
 
                     let location = e
@@ -618,16 +613,8 @@ async fn free_busy(
                                     .and_then(|s| s.as_str())
                                     .unwrap_or("(No subject)");
 
-                                let st = if start_time.len() >= 16 {
-                                    &start_time[11..16]
-                                } else {
-                                    start_time
-                                };
-                                let et = if end_time.len() >= 16 {
-                                    &end_time[11..16]
-                                } else {
-                                    end_time
-                                };
+                                let st = format_local_time(start_time, "%H:%M");
+                                let et = format_local_time(end_time, "%H:%M");
 
                                 println!("  - {} - {}: {} [{}]", st, et, subject, status);
                             }
@@ -677,5 +664,22 @@ fn truncate(s: &str, max_len: usize) -> String {
         format!("{}...", truncated)
     } else {
         s.to_string()
+    }
+}
+
+/// Convert UTC ISO string from Graph API to local time format
+fn format_local_time(utc_str: &str, format_str: &str) -> String {
+    // Graph API sometimes returns YYYY-MM-DDTHH:MM:SS.NNNNNNN
+    // We append Z to treat it as UTC if not present
+    let iso_str = if utc_str.ends_with('Z') {
+        utc_str.to_string()
+    } else {
+        format!("{}Z", utc_str)
+    };
+
+    if let Ok(dt) = DateTime::parse_from_rfc3339(&iso_str) {
+        dt.with_timezone(&Local).format(format_str).to_string()
+    } else {
+        utc_str.to_string()
     }
 }
