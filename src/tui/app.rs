@@ -125,7 +125,8 @@ impl App {
 
             match self.client.get_conversations(&chat.id, None).await {
                 Ok(convs) => {
-                    self.messages = convs.messages
+                    // API returns newest first, so take 50 most recent then reverse for display
+                    let mut msgs: Vec<_> = convs.messages
                         .into_iter()
                         .filter(|m| {
                             m.message_type.as_deref() == Some("RichText/Html")
@@ -133,7 +134,8 @@ impl App {
                         })
                         .take(50)
                         .collect();
-                    self.messages.reverse(); // Show oldest first
+                    msgs.reverse(); // Show oldest first, newest at bottom
+                    self.messages = msgs;
                     self.selected_message = self.messages.len().saturating_sub(1);
                 }
                 Err(e) => {
@@ -159,8 +161,10 @@ impl App {
             let content = format!("<p>{}</p>", html_escape(&self.input));
             match self.client.send_message(chat_id, &content, None).await {
                 Ok(_) => {
-                    self.status_message = "Message sent!".to_string();
+                    self.status_message = "Message sent! Refreshing...".to_string();
                     self.input.clear();
+                    // Small delay to let the API process the message
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     // Reload messages
                     self.load_messages().await?;
                 }
