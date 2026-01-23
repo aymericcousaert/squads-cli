@@ -1,0 +1,50 @@
+pub mod activity;
+pub mod auth;
+pub mod chats;
+pub mod output;
+pub mod teams;
+pub mod users;
+
+use clap::{Parser, Subcommand, ValueEnum};
+
+/// Microsoft Teams CLI for AI agents and terminal users
+#[derive(Parser, Debug)]
+#[command(name = "squads-cli")]
+#[command(author, version, about, long_about = None)]
+pub struct Cli {
+    /// Output format
+    #[arg(short, long, value_enum, default_value = "table", global = true)]
+    pub format: OutputFormat,
+
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Authentication commands
+    Auth(auth::AuthCommand),
+
+    /// Chat operations
+    Chats(chats::ChatsCommand),
+
+    /// Teams operations
+    Teams(teams::TeamsCommand),
+
+    /// User operations
+    Users(users::UsersCommand),
+
+    /// Activity feed
+    Activity(activity::ActivityCommand),
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+pub enum OutputFormat {
+    /// JSON output (best for AI agents)
+    Json,
+    /// Table output (best for humans)
+    #[default]
+    Table,
+    /// Plain output (minimal, for scripting)
+    Plain,
+}

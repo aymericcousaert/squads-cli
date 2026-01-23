@@ -1,0 +1,255 @@
+use std::io::{self, Read};
+
+use anyhow::Result;
+use clap::{Args, Subcommand};
+use serde::Serialize;
+use tabled::Tabled;
+
+use crate::api::TeamsClient;
+use crate::config::Config;
+
+use super::output::{print_error, print_output, print_single, print_success};
+use super::OutputFormat;
+
+#[derive(Args, Debug)]
+pub struct ChatsCommand {
+    #[command(subcommand)]
+    pub command: ChatsSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ChatsSubcommand {
+    /// List all chats
+    List,
+
+    /// Show chat details
+    Show {
+        /// Chat ID
+        chat_id: String,
+    },
+
+    /// Get messages from a chat
+    Messages {
+        /// Chat ID
+        chat_id: String,
+
+        /// Maximum number of messages to retrieve
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+    },
+
+    /// Send a message to a chat
+    Send {
+        /// Chat ID
+        chat_id: String,
+
+        /// Message content (omit to read from stdin)
+        message: Option<String>,
+
+        /// Read message from stdin
+        #[arg(long)]
+        stdin: bool,
+
+        /// Read message from file
+        #[arg(short, long)]
+        file: Option<String>,
+    },
+}
+
+#[derive(Debug, Serialize, Tabled)]
+struct ChatRow {
+    #[tabled(rename = "ID")]
+    id: String,
+    #[tabled(rename = "Title")]
+    title: String,
+    #[tabled(rename = "Members")]
+    members: usize,
+    #[tabled(rename = "Unread")]
+    unread: String,
+    #[tabled(rename = "Type")]
+    chat_type: String,
+}
+
+#[derive(Debug, Serialize, Tabled)]
+struct MessageRow {
+    #[tabled(rename = "ID")]
+    id: String,
+    #[tabled(rename = "From")]
+    from: String,
+    #[tabled(rename = "Time")]
+    time: String,
+    #[tabled(rename = "Content")]
+    content: String,
+}
+
+pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -> Result<()> {
+    match cmd.command {
+        ChatsSubcommand::List => list(config, format).await,
+        ChatsSubcommand::Show { chat_id } => show(config, &chat_id, format).await,
+        ChatsSubcommand::Messages { chat_id, limit } => {
+            messages(config, &chat_id, limit, format).await
+        }
+        ChatsSubcommand::Send {
+            chat_id,
+            message,
+            stdin,
+            file,
+        } => send(config, &chat_id, message, stdin, file).await,
+    }
+}
+
+async fn list(config: &Config, format: OutputFormat) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    let details = client.get_user_details().await?;
+
+    let rows: Vec<ChatRow> = details
+        .chats
+        .into_iter()
+        .map(|chat| {
+            let title = chat.title.unwrap_or_else(|| {
+                // For 1:1 chats, show member info
+                if chat.members.len() == 2 {
+                    "Direct Chat".to_string()
+                } else {
+                    format!("Group ({} members)", chat.members.len())
+                }
+            });
+
+            ChatRow {
+                id: chat.id,
+                title: truncate(&title, 30),
+                members: chat.members.len(),
+                unread: if chat.is_read == Some(false) {
+                    "Yes".to_string()
+                } else {
+                    "No".to_string()
+                },
+                chat_type: chat.chat_type.unwrap_or_else(|| "chat".to_string()),
+            }
+        })
+        .collect();
+
+    print_output(&rows, format);
+    Ok(())
+}
+
+async fn show(config: &Config, chat_id: &str, format: OutputFormat) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    let details = client.get_user_details().await?;
+
+    if let Some(chat) = details.chats.into_iter().find(|c| c.id == chat_id) {
+        print_single(&chat, format);
+    } else {
+        print_error(&format!("Chat not found: {}", chat_id));
+    }
+
+    Ok(())
+}
+
+async fn messages(config: &Config, chat_id: &str, limit: usize, format: OutputFormat) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    let conversations = client.get_conversations(chat_id, None).await?;
+
+    let rows: Vec<MessageRow> = conversations
+        .messages
+        .into_iter()
+        .filter(|m| m.message_type.as_deref() == Some("RichText/Html") || m.message_type.as_deref() == Some("Text"))
+        .take(limit)
+        .map(|msg| {
+            let content = msg
+                .content
+                .map(|c| strip_html(&c))
+                .unwrap_or_default();
+
+            MessageRow {
+                id: msg.id.unwrap_or_default(),
+                from: msg.im_display_name.unwrap_or_else(|| {
+                    msg.from.unwrap_or_else(|| "Unknown".to_string())
+                }),
+                time: msg.original_arrival_time.unwrap_or_default(),
+                content: truncate(&content, 50),
+            }
+        })
+        .collect();
+
+    print_output(&rows, format);
+    Ok(())
+}
+
+async fn send(
+    config: &Config,
+    chat_id: &str,
+    message: Option<String>,
+    stdin: bool,
+    file: Option<String>,
+) -> Result<()> {
+    let content = if let Some(msg) = message {
+        msg
+    } else if stdin {
+        let mut buffer = String::new();
+        io::stdin().read_to_string(&mut buffer)?;
+        buffer.trim().to_string()
+    } else if let Some(path) = file {
+        std::fs::read_to_string(&path)?
+    } else {
+        print_error("No message provided. Use --stdin or --file, or provide message as argument.");
+        return Ok(());
+    };
+
+    if content.is_empty() {
+        print_error("Message cannot be empty");
+        return Ok(());
+    }
+
+    let client = TeamsClient::new(config)?;
+
+    // Convert plain text to simple HTML
+    let html_content = format!("<p>{}</p>", html_escape(&content));
+
+    client.send_message(chat_id, &html_content, None).await?;
+    print_success("Message sent successfully");
+
+    Ok(())
+}
+
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() > max_len {
+        format!("{}...", &s[..max_len - 3])
+    } else {
+        s.to_string()
+    }
+}
+
+fn strip_html(s: &str) -> String {
+    // Simple HTML stripping - remove tags
+    let mut result = String::new();
+    let mut in_tag = false;
+
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => result.push(c),
+            _ => {}
+        }
+    }
+
+    // Decode common HTML entities
+    result
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .trim()
+        .to_string()
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
