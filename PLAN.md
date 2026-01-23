@@ -562,6 +562,7 @@ This approach delivers maximum value for AI agents quickly while maintaining ext
 9. [ ] Add real-time features (WebSocket/Trouter)
 10. [x] Support Markdown in chat messages
 11. [x] Implement Global Search (Mail, Calendar)
-12. [x] Shell completions
-13. [x] Self-installation command (`install`)
-14. [ ] Further polish
+12. [x] Add reaction support to messages
+13. [x] Shell completions
+14. [x] Self-installation command (`install`)
+15. [ ] Further polish

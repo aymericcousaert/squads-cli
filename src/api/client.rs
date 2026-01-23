@@ -580,6 +580,64 @@ impl TeamsClient {
         Err(anyhow!("Failed to reply to message: {} - {}", status, body))
     }
 
+    /// Send a reaction to a message
+    pub async fn send_reaction(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        reaction: &str,
+        remove: bool,
+    ) -> Result<()> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+
+        // Map user-friendly names to Unicode values
+        let unicode = match reaction.to_lowercase().as_str() {
+            "like" | "👍" => "👍",
+            "heart" | "❤️" => "❤️",
+            "laugh" | "😄" => "😄",
+            "surprised" | "😮" => "😮",
+            "sad" | "😢" => "😢",
+            "angry" | "😡" => "😡",
+            _ => reaction, // Fallback to raw string
+        };
+
+        let action = if remove { "unsetReaction" } else { "setReaction" };
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/chats/{}/messages/{}/{}",
+            conversation_id, message_id, action
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let body = serde_json::json!({
+            "reactionType": unicode
+        });
+
+        let res = self
+            .http
+            .post(&url)
+            .headers(headers)
+            .body(body.to_string())
+            .send()
+            .await?;
+
+        if res.status().is_success() || res.status().as_u16() == 204 {
+            Ok(())
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to {} reaction: {} - {}", if remove { "remove" } else { "send" }, status, body))
+        }
+    }
+
     /// Get activity feed
     pub async fn get_activities(&self) -> Result<Conversations> {
         self.get_conversations("48:notifications", None).await

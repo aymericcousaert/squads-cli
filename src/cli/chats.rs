@@ -91,6 +91,23 @@ pub enum ChatsSubcommand {
         /// Message ID to delete
         message_id: String,
     },
+
+    /// React to a message
+    React {
+        /// Chat ID
+        chat_id: String,
+
+        /// Message ID to react to
+        #[arg(short, long)]
+        message_id: String,
+
+        /// Reaction type (like, heart, laugh, surprised, sad, angry)
+        reaction: String,
+
+        /// Remove the reaction instead of adding it
+        #[arg(long)]
+        remove: bool,
+    },
 }
 
 #[derive(Debug, Serialize, Tabled)]
@@ -143,6 +160,12 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
             chat_id,
             message_id,
         } => delete(config, &chat_id, &message_id).await,
+        ChatsSubcommand::React {
+            chat_id,
+            message_id,
+            reaction,
+            remove,
+        } => react(config, &chat_id, &message_id, &reaction, remove).await,
     }
 }
 
@@ -368,5 +391,24 @@ async fn delete(config: &Config, chat_id: &str, message_id: &str) -> Result<()> 
     let client = TeamsClient::new(config)?;
     client.delete_message(chat_id, message_id).await?;
     print_success("Message deleted");
+    Ok(())
+}
+
+async fn react(
+    config: &Config,
+    chat_id: &str,
+    message_id: &str,
+    reaction: &str,
+    remove: bool,
+) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    client
+        .send_reaction(chat_id, message_id, reaction, remove)
+        .await?;
+    if remove {
+        print_success("Reaction removed");
+    } else {
+        print_success("Reaction added");
+    }
     Ok(())
 }

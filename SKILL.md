@@ -22,6 +22,7 @@ Search across both Mail and Calendar simultaneously.
 - **Send Message**: `squads-cli chats send <chat-id> "<content>"`
   - Support for `--markdown` and `--stdin`.
 - **Reply**: `squads-cli chats reply <chat-id> --message-id <msg-id> "<content>"`
+- **React**: `squads-cli chats react <chat-id> --message-id <msg-id> <reaction>` (e.g., like, heart, laugh, surprised, sad, angry)
 
 ### 3. Outlook Mail
 - **List/Search**: `squads-cli mail list` or `squads-cli mail search "<query>"`

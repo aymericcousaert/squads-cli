@@ -77,6 +77,9 @@ squads-cli chats send <chat-id> "**Bold** and _italic_" --markdown
 # Reply to a message (with citation fallback for 1:1 chats)
 squads-cli chats reply <chat-id> --message-id <msg-id> "My reply"
 
+# React to a message (like, heart, laugh, surprised, sad, angry)
+squads-cli chats react <chat-id> --message-id <msg-id> heart
+
 ### Outlook Mail
 
 ```bash
