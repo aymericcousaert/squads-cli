@@ -24,9 +24,10 @@ A command-line interface for Microsoft Teams, designed for AI agents (Claude Cod
 git clone https://github.com/aymericcousaert/squads-cli
 cd squads-cli
 cargo build --release
+./target/release/squads-cli install
 ```
 
-The binary will be at `target/release/squads-cli`.
+The binary will be installed to `~/.local/bin/squads-cli`. Ensure this directory is in your `PATH`.
 
 ## Usage
 

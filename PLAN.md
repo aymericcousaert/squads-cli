@@ -563,4 +563,5 @@ This approach delivers maximum value for AI agents quickly while maintaining ext
 10. [x] Support Markdown in chat messages
 11. [x] Implement Global Search (Mail, Calendar)
 12. [x] Shell completions
-13. [ ] Further polish
+13. [x] Self-installation command (`install`)
+14. [ ] Further polish
