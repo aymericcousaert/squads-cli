@@ -200,6 +200,13 @@ Use `--format` to control output:
 
 ## AI Agent Integration
 
+To make `squads-cli` capabilities available globally to your AI agent (like Claude Code or OpenCode), you can symlink the `SKILL.md` file:
+
+```bash
+mkdir -p ~/.claude/skills/squads-cli
+ln -s $(pwd)/SKILL.md ~/.claude/skills/squads-cli/SKILL.md
+```
+
 Example workflow for an AI agent:
 
 ```bash
