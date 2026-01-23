@@ -91,3 +91,14 @@ pub struct SendMailMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cc_recipients: Option<Vec<Recipient>>,
 }
+
+/// Request to create a draft message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateDraftRequest {
+    pub subject: String,
+    pub body: ItemBody,
+    pub to_recipients: Vec<Recipient>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cc_recipients: Option<Vec<Recipient>>,
+}

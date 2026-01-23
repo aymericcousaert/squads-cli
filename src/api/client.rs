@@ -537,4 +537,75 @@ impl TeamsClient {
             Err(anyhow!("Failed to search mail: {} - {}", status, body))
         }
     }
+
+    /// Create a draft email message
+    pub async fn create_draft(
+        &self,
+        to: Vec<&str>,
+        subject: &str,
+        body: &str,
+        cc: Option<Vec<&str>>,
+    ) -> Result<MailMessage> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = "https://graph.microsoft.com/v1.0/me/messages";
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let to_recipients: Vec<Recipient> = to
+            .iter()
+            .map(|email| Recipient {
+                email_address: EmailAddress {
+                    address: email.to_string(),
+                    name: None,
+                },
+            })
+            .collect();
+
+        let cc_recipients: Option<Vec<Recipient>> = cc.map(|emails| {
+            emails
+                .iter()
+                .map(|email| Recipient {
+                    email_address: EmailAddress {
+                        address: email.to_string(),
+                        name: None,
+                    },
+                })
+                .collect()
+        });
+
+        let request = CreateDraftRequest {
+            subject: subject.to_string(),
+            body: ItemBody {
+                content_type: "Text".to_string(),
+                content: body.to_string(),
+            },
+            to_recipients,
+            cc_recipients,
+        };
+
+        let res = self
+            .http
+            .post(url)
+            .headers(headers)
+            .body(serde_json::to_string(&request)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse draft response")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to create draft: {} - {}", status, body))
+        }
+    }
 }

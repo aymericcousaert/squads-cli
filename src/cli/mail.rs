@@ -74,6 +74,32 @@ pub enum MailSubcommand {
         #[arg(short, long, default_value = "20")]
         limit: usize,
     },
+
+    /// Create a draft email
+    Draft {
+        /// Recipient email address(es), comma-separated
+        #[arg(short, long)]
+        to: String,
+
+        /// Email subject
+        #[arg(short, long)]
+        subject: String,
+
+        /// Email body (omit to read from stdin)
+        body: Option<String>,
+
+        /// CC recipients, comma-separated
+        #[arg(short, long)]
+        cc: Option<String>,
+
+        /// Read body from stdin
+        #[arg(long)]
+        stdin: bool,
+
+        /// Read body from file
+        #[arg(long)]
+        file: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Tabled)]
@@ -116,6 +142,14 @@ pub async fn execute(cmd: MailCommand, config: &Config, format: OutputFormat) ->
             file,
         } => send(config, &to, &subject, body, cc, stdin, file).await,
         MailSubcommand::Search { query, limit } => search(config, &query, limit, format).await,
+        MailSubcommand::Draft {
+            to,
+            subject,
+            body,
+            cc,
+            stdin,
+            file,
+        } => draft(config, &to, &subject, body, cc, stdin, file, format).await,
     }
 }
 
@@ -344,4 +378,59 @@ fn strip_html(s: &str) -> String {
         .replace("&#39;", "'")
         .trim()
         .to_string()
+}
+
+async fn draft(
+    config: &Config,
+    to: &str,
+    subject: &str,
+    body: Option<String>,
+    cc: Option<String>,
+    stdin: bool,
+    file: Option<String>,
+    format: OutputFormat,
+) -> Result<()> {
+    // Get the body content
+    let content = if let Some(b) = body {
+        b
+    } else if stdin {
+        let mut buffer = String::new();
+        io::stdin().read_to_string(&mut buffer)?;
+        buffer.trim().to_string()
+    } else if let Some(path) = file {
+        std::fs::read_to_string(&path)?
+    } else {
+        print_error("No body provided. Use --stdin or --file, or provide body as argument.");
+        return Ok(());
+    };
+
+    if content.is_empty() {
+        print_error("Email body cannot be empty");
+        return Ok(());
+    }
+
+    let client = TeamsClient::new(config)?;
+
+    // Parse recipients
+    let to_list: Vec<&str> = to.split(',').map(|s| s.trim()).collect();
+    let cc_list: Option<Vec<String>> = cc.as_ref().map(|c| c.split(',').map(|s| s.trim().to_string()).collect());
+    let cc_refs: Option<Vec<&str>> = cc_list.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect());
+
+    let draft = client.create_draft(to_list, subject, &content, cc_refs).await?;
+
+    match format {
+        OutputFormat::Json => {
+            print_single(&draft, format);
+        }
+        _ => {
+            print_success(&format!("Draft created with ID: {}", draft.id.unwrap_or_default()));
+            println!("To: {}", to);
+            println!("Subject: {}", subject);
+            if let Some(link) = draft.web_link {
+                println!("Open in Outlook: {}", link);
+            }
+        }
+    }
+
+    Ok(())
 }
