@@ -172,6 +172,20 @@ squads-cli users me
 squads-cli activity list
 ```
 
+### Shell Completions
+
+Generate completion scripts for your shell.
+
+```bash
+# For Zsh
+squads-cli completions zsh > ~/.zfunc/_squads-cli
+echo "fpath+=~/.zfunc" >> ~/.zshrc
+
+# For Bash
+squads-cli completions bash > squads-cli.bash
+source squads-cli.bash
+```
+
 ## Output Formats
 
 Use `--format` to control output:

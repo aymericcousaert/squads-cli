@@ -2,6 +2,7 @@ pub mod activity;
 pub mod auth;
 pub mod calendar;
 pub mod chats;
+pub mod completions;
 pub mod mail;
 pub mod output;
 pub mod search;
@@ -48,6 +49,9 @@ pub enum Commands {
 
     /// Global search across mail, teams, and calendar
     Search(search::SearchCommand),
+
+    /// Generate shell completions
+    Completions(completions::CompletionsCommand),
 
     /// Interactive terminal UI (requires --features tui)
     #[cfg(feature = "tui")]

@@ -11,6 +11,7 @@ categories = ["command-line-utilities"]
 [dependencies]
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
 
 # TUI (optional, for later)
 ratatui = { version = "0.30", optional = true }

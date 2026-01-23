@@ -38,6 +38,7 @@ async fn main() -> Result<()> {
         Commands::Mail(cmd) => cli::mail::execute(cmd, &config, cli.format).await,
         Commands::Calendar(cmd) => cli::calendar::execute(cmd, &config, cli.format).await,
         Commands::Search(cmd) => cli::search::execute(cmd, &config, cli.format).await,
+        Commands::Completions(cmd) => cli::completions::execute(cmd),
         #[cfg(feature = "tui")]
         Commands::Tui => tui::run(&config).await,
     }
