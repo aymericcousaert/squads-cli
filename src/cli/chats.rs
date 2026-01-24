@@ -51,7 +51,7 @@ pub enum ChatsSubcommand {
         stdin: bool,
 
         /// Read message from file
-        #[arg(short, long)]
+        #[arg(long)]
         file: Option<String>,
 
         /// Treat message as Markdown and convert to HTML
