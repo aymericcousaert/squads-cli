@@ -305,10 +305,7 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
             col = col % inner_width;
         }
 
-        f.set_cursor_position((
-            area.x + col + 1,
-            area.y + row + 1,
-        ));
+        f.set_cursor_position((area.x + col + 1, area.y + row + 1));
     } else if app.mode == Mode::Command {
         let char_count = app.command_input.chars().count() as u16;
         f.set_cursor_position((area.x + char_count + 2, area.y + 1));

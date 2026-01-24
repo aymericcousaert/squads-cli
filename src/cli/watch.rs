@@ -45,7 +45,10 @@ pub async fn execute(cmd: WatchCommand, config: &Config) -> Result<()> {
     let client = TeamsClient::new(config)?;
 
     println!("{}", "Starting watch mode...".cyan().bold());
-    println!("Polling every {} seconds. Press Ctrl+C to stop.", cmd.interval);
+    println!(
+        "Polling every {} seconds. Press Ctrl+C to stop.",
+        cmd.interval
+    );
     if cmd.notify {
         println!("Desktop notifications: {}", "enabled".green());
     }
@@ -84,7 +87,10 @@ pub async fn execute(cmd: WatchCommand, config: &Config) -> Result<()> {
     }
 
     if !cmd.quiet {
-        println!("{}", "Initial sync complete. Watching for new items...".dimmed());
+        println!(
+            "{}",
+            "Initial sync complete. Watching for new items...".dimmed()
+        );
         println!();
     }
 
@@ -104,11 +110,7 @@ pub async fn execute(cmd: WatchCommand, config: &Config) -> Result<()> {
     }
 }
 
-async fn check_new_messages(
-    client: &TeamsClient,
-    seen: &mut HashSet<String>,
-    cmd: &WatchCommand,
-) {
+async fn check_new_messages(client: &TeamsClient, seen: &mut HashSet<String>, cmd: &WatchCommand) {
     let details = match client.get_user_details().await {
         Ok(d) => d,
         Err(_) => return,
@@ -139,19 +141,21 @@ async fn check_new_messages(
 
             // Skip non-user messages
             if msg.message_type.as_deref() != Some("RichText/Html")
-                && msg.message_type.as_deref() != Some("Text") {
+                && msg.message_type.as_deref() != Some("Text")
+            {
                 continue;
             }
 
-            let sender = msg.im_display_name
+            let sender = msg
+                .im_display_name
                 .or(msg.from.clone())
                 .unwrap_or_else(|| "Unknown".to_string());
 
-            let content = msg.content
-                .map(|c| strip_html(&c))
-                .unwrap_or_default();
+            let content = msg.content.map(|c| strip_html(&c)).unwrap_or_default();
 
-            let chat_name = chat.title.clone()
+            let chat_name = chat
+                .title
+                .clone()
                 .unwrap_or_else(|| "Direct Chat".to_string());
 
             let time = chrono::Local::now().format("%H:%M:%S").to_string();
@@ -178,11 +182,7 @@ async fn check_new_messages(
     }
 }
 
-async fn check_new_emails(
-    client: &TeamsClient,
-    seen: &mut HashSet<String>,
-    cmd: &WatchCommand,
-) {
+async fn check_new_emails(client: &TeamsClient, seen: &mut HashSet<String>, cmd: &WatchCommand) {
     let emails = match client.get_mail_messages(Some("inbox"), 20).await {
         Ok(e) => e,
         Err(_) => return,
@@ -205,16 +205,21 @@ async fn check_new_emails(
             continue;
         }
 
-        let sender = email.from
+        let sender = email
+            .from
             .as_ref()
             .map(|f| {
-                f.email_address.name
+                f.email_address
+                    .name
                     .clone()
                     .unwrap_or_else(|| f.email_address.address.clone())
             })
             .unwrap_or_else(|| "Unknown".to_string());
 
-        let subject = email.subject.clone().unwrap_or_else(|| "(No subject)".to_string());
+        let subject = email
+            .subject
+            .clone()
+            .unwrap_or_else(|| "(No subject)".to_string());
 
         let time = chrono::Local::now().format("%H:%M:%S").to_string();
 

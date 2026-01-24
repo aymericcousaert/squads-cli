@@ -137,7 +137,8 @@ pub async fn execute(cmd: FeedCommand, config: &Config, format: OutputFormat) ->
                     .from
                     .as_ref()
                     .map(|f| {
-                        f.email_address.name
+                        f.email_address
+                            .name
                             .clone()
                             .unwrap_or_else(|| f.email_address.address.clone())
                     })

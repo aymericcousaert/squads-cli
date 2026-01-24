@@ -42,7 +42,7 @@ pub struct App {
     pub active_panel: Panel,
     pub mode: Mode,
     pub input: String,
-    pub input_cursor: usize,  // Cursor position in input (character index)
+    pub input_cursor: usize, // Cursor position in input (character index)
     pub command_input: String,
     pub status_message: String,
     pub should_quit: bool,
