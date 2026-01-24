@@ -107,6 +107,29 @@ pub enum TeamsSubcommand {
         #[arg(long)]
         message_id: String,
     },
+
+    /// List images shared in a team channel
+    Images {
+        /// Team ID
+        team_id: String,
+
+        /// Channel ID
+        channel_id: String,
+
+        /// Maximum number of messages to scan for images
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+    },
+
+    /// Download an image from a team channel
+    DownloadImage {
+        /// Image URL (from images list)
+        image_url: String,
+
+        /// Output file path
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Tabled)]
@@ -141,6 +164,28 @@ struct MessageRow {
     reactions: String,
     #[tabled(rename = "Content")]
     content: String,
+}
+
+#[derive(Debug, Serialize, Tabled)]
+struct ImageRow {
+    #[tabled(rename = "URL")]
+    url: String,
+    #[tabled(rename = "From")]
+    from: String,
+    #[tabled(rename = "Time")]
+    time: String,
+    #[tabled(rename = "Message ID")]
+    message_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ImageJson {
+    team_id: String,
+    channel_id: String,
+    message_id: String,
+    image_url: String,
+    from: String,
+    time: String,
 }
 
 pub async fn execute(cmd: TeamsCommand, config: &Config, format: OutputFormat) -> Result<()> {
@@ -196,6 +241,14 @@ pub async fn execute(cmd: TeamsCommand, config: &Config, format: OutputFormat) -
             channel_id,
             message_id,
         } => delete(config, &team_id, &channel_id, &message_id).await,
+        TeamsSubcommand::Images {
+            team_id,
+            channel_id,
+            limit,
+        } => images(config, &team_id, &channel_id, limit, format).await,
+        TeamsSubcommand::DownloadImage { image_url, output } => {
+            download_image(config, &image_url, output).await
+        }
     }
 }
 
@@ -417,5 +470,144 @@ async fn delete(config: &Config, team_id: &str, channel_id: &str, message_id: &s
         .delete_channel_message(team_id, channel_id, message_id)
         .await?;
     print_success("Message deleted");
+    Ok(())
+}
+
+async fn images(
+    config: &Config,
+    team_id: &str,
+    channel_id: &str,
+    limit: usize,
+    format: OutputFormat,
+) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    let conversations = client.get_team_conversations(team_id, channel_id).await?;
+
+    let mut all_images: Vec<ImageJson> = Vec::new();
+    let mut count = 0;
+
+    for chain in &conversations.reply_chains {
+        for msg in &chain.messages {
+            if count >= limit {
+                break;
+            }
+
+            if msg.message_type.as_deref() != Some("RichText/Html")
+                && msg.message_type.as_deref() != Some("Text")
+            {
+                continue;
+            }
+
+            let content = msg.content.as_deref().unwrap_or("");
+            let img_urls = extract_image_urls(content);
+
+            for url in img_urls {
+                all_images.push(ImageJson {
+                    team_id: team_id.to_string(),
+                    channel_id: channel_id.to_string(),
+                    message_id: msg.id.clone().unwrap_or_default(),
+                    image_url: url,
+                    from: msg
+                        .im_display_name
+                        .clone()
+                        .or(msg.from.clone())
+                        .unwrap_or_else(|| "Unknown".to_string()),
+                    time: msg.original_arrival_time.clone().unwrap_or_default(),
+                });
+            }
+
+            count += 1;
+        }
+        if count >= limit {
+            break;
+        }
+    }
+
+    if all_images.is_empty() {
+        println!("No images found in this channel.");
+        return Ok(());
+    }
+
+    match format {
+        OutputFormat::Json => {
+            print_single(&all_images, format);
+        }
+        _ => {
+            let rows: Vec<ImageRow> = all_images
+                .into_iter()
+                .map(|i| ImageRow {
+                    url: truncate(&i.image_url, 60),
+                    from: truncate(&i.from, 15),
+                    time: i.time,
+                    message_id: i.message_id,
+                })
+                .collect();
+
+            print_output(&rows, format);
+        }
+    }
+
+    Ok(())
+}
+
+fn extract_image_urls(content: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+
+    let mut remaining = content;
+    while let Some(img_start) = remaining.find("<img") {
+        remaining = &remaining[img_start..];
+
+        if let Some(src_start) = remaining.find("src=\"") {
+            let src_content = &remaining[src_start + 5..];
+            if let Some(src_end) = src_content.find('"') {
+                let url = &src_content[..src_end];
+                if url.contains("ams")
+                    || url.contains("teams.microsoft.com")
+                    || url.contains("blob")
+                    || url.starts_with("http")
+                {
+                    let decoded_url = url
+                        .replace("&amp;", "&")
+                        .replace("&lt;", "<")
+                        .replace("&gt;", ">");
+                    urls.push(decoded_url);
+                }
+            }
+        }
+
+        if let Some(end) = remaining.find('>') {
+            remaining = &remaining[end + 1..];
+        } else {
+            break;
+        }
+    }
+
+    urls
+}
+
+async fn download_image(config: &Config, image_url: &str, output: Option<String>) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+
+    let (content_type, bytes) = client.download_ams_image(image_url).await?;
+
+    let extension = match content_type.as_str() {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "png",
+    };
+
+    let output_path =
+        output.unwrap_or_else(|| format!("image_{}.{}", chrono::Utc::now().timestamp(), extension));
+
+    std::fs::write(&output_path, &bytes)?;
+    print_success(&format!(
+        "Downloaded {} ({}, {} bytes)",
+        output_path,
+        content_type,
+        bytes.len()
+    ));
+
     Ok(())
 }

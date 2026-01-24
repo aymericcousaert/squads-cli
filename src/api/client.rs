@@ -2006,13 +2006,57 @@ impl TeamsClient {
 
     /// Download an image from Teams AMS (Azure Media Services) URL
     pub async fn download_ams_image(&self, image_url: &str) -> Result<(String, Vec<u8>)> {
-        // AMS images require the chatsvcagg or IC3 token
+        // Try with chatsvcagg token first (works for chat images)
         let token = self.get_token(SCOPE_CHATSVCAGG).await?;
 
         let mut headers = HeaderMap::new();
         headers.insert(
             HeaderName::from_static("authorization"),
             HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(image_url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let content_type = res
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            let bytes = res.bytes().await?.to_vec();
+            return Ok((content_type, bytes));
+        }
+
+        // If chatsvcagg fails, try with skype token (works for Teams channel images)
+        let skype_token = self.get_skype_token().await?;
+
+        // Try different auth header formats for skype token
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("skype_token {}", skype_token.value))?,
+        );
+
+        let res = self.http.get(image_url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let content_type = res
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            let bytes = res.bytes().await?.to_vec();
+            return Ok((content_type, bytes));
+        }
+
+        // Try with IC3 token as last resort
+        let ic3_token = self.get_token(SCOPE_IC3).await?;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", ic3_token.value))?,
         );
 
         let res = self.http.get(image_url).headers(headers).send().await?;

@@ -51,10 +51,12 @@ Search across both Mail and Calendar simultaneously.
 ### 6. Teams Channels
 - **List Teams**: `squads-cli teams list`
 - **List Channels**: `squads-cli teams channels <team-id>`
-- **View Messages**: `squads-cli teams messages <team-id> <channel-id>`
+- **View Messages**: `squads-cli teams messages <team-id> <channel-id>` (includes reactions column)
 - **Post to Channel**: `squads-cli teams post <team-id> <channel-id> "<message>"`
   - Support for `--subject`, `--markdown`, and `--stdin`.
 - **Reply in Channel**: `squads-cli teams reply <team-id> <channel-id> --message-id <id> "<reply>"`
+- **List Images**: `squads-cli teams images <team-id> <channel-id>` (list images in channel messages)
+- **Download Image**: `squads-cli teams download-image <url> --output ./image.png`
 
 ### 7. Unified Feed
 - **View All Activity**: `squads-cli feed` (combined view of chats and emails)
