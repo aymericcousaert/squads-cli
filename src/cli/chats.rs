@@ -86,6 +86,10 @@ pub enum ChatsSubcommand {
         /// Reply content
         content: String,
 
+        /// Treat content as Markdown and convert to HTML
+        #[arg(short, long)]
+        markdown: bool,
+
         /// Send raw HTML without escaping
         #[arg(long)]
         html: bool,
@@ -284,8 +288,9 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
             chat_id,
             message_id,
             content,
+            markdown,
             html,
-        } => reply(config, &chat_id, &message_id, &content, html).await,
+        } => reply(config, &chat_id, &message_id, &content, markdown, html).await,
         ChatsSubcommand::Delete {
             chat_id,
             message_id,
@@ -534,12 +539,15 @@ async fn reply(
     chat_id: &str,
     message_id: &str,
     content: &str,
+    markdown: bool,
     html: bool,
 ) -> Result<()> {
     let client = TeamsClient::new(config)?;
 
     let html_body = if html {
         content.to_string()
+    } else if markdown {
+        markdown::to_html(content)
     } else {
         format!("<p>{}</p>", html_escape(content))
     };
