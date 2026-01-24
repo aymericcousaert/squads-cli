@@ -885,6 +885,7 @@ impl TeamsClient {
             "surprised" | "😮" => "😮",
             "sad" | "😢" => "😢",
             "angry" | "😡" => "😡",
+            "skull" | "💀" => "💀",
             _ => reaction, // Fallback to raw string
         };
 

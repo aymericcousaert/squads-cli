@@ -105,7 +105,7 @@ pub enum ChatsSubcommand {
         #[arg(short, long)]
         message_id: String,
 
-        /// Reaction type (like, heart, laugh, surprised, sad, angry)
+        /// Reaction type (like, heart, laugh, surprised, sad, angry, skull)
         reaction: String,
 
         /// Remove the reaction instead of adding it
