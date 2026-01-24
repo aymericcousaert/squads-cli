@@ -53,6 +53,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 markdown = "1.0.0"
 
+# Desktop notifications
+notify-rust = "4"
+
 [features]
 default = []
 tui = ["ratatui", "crossterm"]

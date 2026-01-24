@@ -3,12 +3,14 @@ pub mod auth;
 pub mod calendar;
 pub mod chats;
 pub mod completions;
+pub mod feed;
 pub mod install;
 pub mod mail;
 pub mod output;
 pub mod search;
 pub mod teams;
 pub mod users;
+pub mod watch;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -50,6 +52,12 @@ pub enum Commands {
 
     /// Global search across mail, teams, and calendar
     Search(search::SearchCommand),
+
+    /// Unified feed of messages and emails
+    Feed(feed::FeedCommand),
+
+    /// Watch for new messages and emails in real-time
+    Watch(watch::WatchCommand),
 
     /// Generate shell completions
     Completions(completions::CompletionsCommand),

@@ -38,6 +38,8 @@ async fn main() -> Result<()> {
         Commands::Mail(cmd) => cli::mail::execute(cmd, &config, cli.format).await,
         Commands::Calendar(cmd) => cli::calendar::execute(cmd, &config, cli.format).await,
         Commands::Search(cmd) => cli::search::execute(cmd, &config, cli.format).await,
+        Commands::Feed(cmd) => cli::feed::execute(cmd, &config, cli.format).await,
+        Commands::Watch(cmd) => cli::watch::execute(cmd, &config).await,
         Commands::Completions(cmd) => cli::completions::execute(cmd),
         Commands::Install => cli::install::execute(),
         #[cfg(feature = "tui")]
