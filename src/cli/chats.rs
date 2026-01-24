@@ -174,6 +174,16 @@ pub enum ChatsSubcommand {
         #[arg(short, long)]
         output: Option<String>,
     },
+
+    /// View reactions on a specific message
+    Reactions {
+        /// Chat ID
+        chat_id: String,
+
+        /// Message ID to get reactions for
+        #[arg(short, long)]
+        message_id: String,
+    },
 }
 
 #[derive(Debug, Serialize, Tabled)]
@@ -198,6 +208,8 @@ struct MessageRow {
     from: String,
     #[tabled(rename = "Time")]
     time: String,
+    #[tabled(rename = "Reactions")]
+    reactions: String,
     #[tabled(rename = "Content")]
     content: String,
 }
@@ -269,6 +281,24 @@ struct ImageJson {
     time: String,
 }
 
+#[derive(Debug, Serialize, Tabled)]
+struct ReactionRow {
+    #[tabled(rename = "Reaction")]
+    reaction: String,
+    #[tabled(rename = "User")]
+    user: String,
+    #[tabled(rename = "Time")]
+    time: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ReactionJson {
+    reaction: String,
+    user_mri: String,
+    user_name: Option<String>,
+    timestamp: u64,
+}
+
 pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -> Result<()> {
     match cmd.command {
         ChatsSubcommand::List => list(config, format).await,
@@ -317,6 +347,10 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
         ChatsSubcommand::DownloadImage { image_url, output } => {
             download_image(config, &image_url, output).await
         }
+        ChatsSubcommand::Reactions {
+            chat_id,
+            message_id,
+        } => reactions(config, &chat_id, &message_id, format).await,
     }
 }
 
@@ -397,6 +431,7 @@ async fn messages(
                 .into_iter()
                 .map(|msg| {
                     let content = msg.content.map(|c| strip_html(&c)).unwrap_or_default();
+                    let reactions = format_reactions_summary(&msg.properties);
 
                     MessageRow {
                         id: msg.id.unwrap_or_default(),
@@ -404,6 +439,7 @@ async fn messages(
                             .im_display_name
                             .unwrap_or_else(|| msg.from.unwrap_or_else(|| "Unknown".to_string())),
                         time: msg.original_arrival_time.unwrap_or_default(),
+                        reactions,
                         content: truncate(&content, 50),
                     }
                 })
@@ -413,6 +449,27 @@ async fn messages(
         }
     }
     Ok(())
+}
+
+/// Format reactions as a summary string (e.g., "👍2 ❤️1")
+fn format_reactions_summary(props: &Option<crate::types::MessageProperties>) -> String {
+    if let Some(properties) = props {
+        if let Some(emotions) = &properties.emotions {
+            let parts: Vec<String> = emotions
+                .iter()
+                .map(|e| {
+                    let count = e.users.len();
+                    if count > 1 {
+                        format!("{}{}", e.key, count)
+                    } else {
+                        e.key.clone()
+                    }
+                })
+                .collect();
+            return parts.join(" ");
+        }
+    }
+    String::new()
 }
 
 async fn send(
@@ -874,6 +931,83 @@ async fn download_image(config: &Config, image_url: &str, output: Option<String>
         content_type,
         bytes.len()
     ));
+
+    Ok(())
+}
+
+async fn reactions(
+    config: &Config,
+    chat_id: &str,
+    message_id: &str,
+    format: OutputFormat,
+) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    let convs = client.get_conversations(chat_id, None).await?;
+
+    // Find the specific message
+    let message = convs
+        .messages
+        .iter()
+        .find(|m| m.id.as_deref() == Some(message_id));
+
+    let Some(msg) = message else {
+        print_error(&format!("Message not found: {}", message_id));
+        return Ok(());
+    };
+
+    let mut all_reactions: Vec<ReactionJson> = Vec::new();
+
+    if let Some(props) = &msg.properties {
+        if let Some(emotions) = &props.emotions {
+            for emotion in emotions {
+                for user in &emotion.users {
+                    all_reactions.push(ReactionJson {
+                        reaction: emotion.key.clone(),
+                        user_mri: user.mri.clone(),
+                        user_name: None, // Could resolve user names if needed
+                        timestamp: user.time,
+                    });
+                }
+            }
+        }
+    }
+
+    if all_reactions.is_empty() {
+        println!("No reactions on this message.");
+        return Ok(());
+    }
+
+    match format {
+        OutputFormat::Json => {
+            print_single(&all_reactions, format);
+        }
+        _ => {
+            let rows: Vec<ReactionRow> = all_reactions
+                .into_iter()
+                .map(|r| {
+                    // Extract user ID from MRI (8:orgid:uuid -> uuid)
+                    let user_display = r
+                        .user_mri
+                        .strip_prefix("8:orgid:")
+                        .unwrap_or(&r.user_mri)
+                        .to_string();
+
+                    // Convert timestamp to readable time
+                    let time = chrono::DateTime::from_timestamp_millis(r.timestamp as i64)
+                        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                        .unwrap_or_else(|| r.timestamp.to_string());
+
+                    ReactionRow {
+                        reaction: r.reaction,
+                        user: truncate(&user_display, 36),
+                        time,
+                    }
+                })
+                .collect();
+
+            print_output(&rows, format);
+        }
+    }
 
     Ok(())
 }

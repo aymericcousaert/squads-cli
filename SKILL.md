@@ -18,11 +18,12 @@ Search across both Mail and Calendar simultaneously.
 
 ### 2. Teams Chats
 - **List Chats**: `squads-cli chats list`
-- **View Messages**: `squads-cli chats messages <chat-id>`
+- **View Messages**: `squads-cli chats messages <chat-id>` (includes reactions column)
 - **Send Message**: `squads-cli chats send <chat-id> "<content>"`
   - Support for `--markdown` and `--stdin`.
 - **Reply**: `squads-cli chats reply <chat-id> --message-id <msg-id> "<content>"`
 - **React**: `squads-cli chats react <chat-id> --message-id <msg-id> <reaction>` (e.g., like, heart, laugh, surprised, sad, angry)
+- **View Reactions**: `squads-cli chats reactions <chat-id> --message-id <msg-id>` (see who reacted to a message)
 - **View Mentions**: `squads-cli chats mentions` (find messages where you are @mentioned)
 - **List Files**: `squads-cli chats files <chat-id>` (list files shared in a chat)
 - **Download File**: `squads-cli chats download-file <chat-id> <file-id> --output ./file.pdf`
@@ -70,6 +71,7 @@ Search across both Mail and Calendar simultaneously.
 6. **Find Users by Name**: Use `squads-cli users search "John"` to find user email/ID for messaging.
 7. **Monitor Mentions**: Use `squads-cli chats mentions` or `squads-cli feed --mentions-only` to find messages that need your attention.
 8. **Access Shared Content**: Use `squads-cli chats images` and `squads-cli chats files` to list and download content shared in chats.
+9. **Monitor Reactions for Feedback**: Use `squads-cli chats messages` to see reactions summary, or `squads-cli chats reactions` for detailed info on who reacted. Reactions like thumbs up indicate approval/acknowledgment.
 
 ## Authentication
 

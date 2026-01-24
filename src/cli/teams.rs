@@ -137,6 +137,8 @@ struct MessageRow {
     subject: String,
     #[tabled(rename = "Time")]
     time: String,
+    #[tabled(rename = "Reactions")]
+    reactions: String,
     #[tabled(rename = "Content")]
     content: String,
 }
@@ -275,6 +277,8 @@ async fn messages(
                     .and_then(|p| p.subject.clone())
                     .unwrap_or_default();
 
+                let reactions = format_reactions_summary(&msg.properties);
+
                 rows.push(MessageRow {
                     id: msg.id.unwrap_or_default(),
                     from: msg
@@ -282,6 +286,7 @@ async fn messages(
                         .unwrap_or_else(|| msg.from.unwrap_or_else(|| "Unknown".to_string())),
                     subject: truncate(&subject, 20),
                     time: msg.original_arrival_time.unwrap_or_default(),
+                    reactions,
                     content: match format {
                         OutputFormat::Json => content.clone(),
                         _ => truncate(&content, 40),
@@ -300,6 +305,27 @@ async fn messages(
 
     print_output(&rows, format);
     Ok(())
+}
+
+/// Format reactions as a summary string (e.g., "👍2 ❤️1")
+fn format_reactions_summary(props: &Option<crate::types::MessageProperties>) -> String {
+    if let Some(properties) = props {
+        if let Some(emotions) = &properties.emotions {
+            let parts: Vec<String> = emotions
+                .iter()
+                .map(|e| {
+                    let count = e.users.len();
+                    if count > 1 {
+                        format!("{}{}", e.key, count)
+                    } else {
+                        e.key.clone()
+                    }
+                })
+                .collect();
+            return parts.join(" ");
+        }
+    }
+    String::new()
 }
 
 async fn post(
