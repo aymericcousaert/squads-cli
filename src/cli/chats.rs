@@ -552,7 +552,9 @@ async fn reply(
         format!("<p>{}</p>", html_escape(content))
     };
 
-    client.reply_to_message(chat_id, message_id, &html_body).await?;
+    client
+        .reply_to_message(chat_id, message_id, &html_body)
+        .await?;
     print_success("Reply sent");
     Ok(())
 }
