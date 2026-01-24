@@ -370,14 +370,13 @@ impl TeamsClient {
 
         // Find @Name patterns - capture first name + optional last name (uppercase start)
         let re_pattern =
-            regex::Regex::new(r"@([A-Za-zÀ-ÿ][-A-Za-zÀ-ÿ]*)(?:\s+([A-ZÀ-Ý][-A-Za-zÀ-ÿ]*))?")
-                .ok();
+            regex::Regex::new(r"@([A-Za-zÀ-ÿ][-A-Za-zÀ-ÿ]*)(?:\s+([A-ZÀ-Ý][-A-Za-zÀ-ÿ]*))?").ok();
 
         // Common words to exclude from being treated as last names
         let common_words: std::collections::HashSet<&str> = [
-            "And", "Or", "The", "Is", "Was", "Are", "Were", "Has", "Have", "Had",
-            "For", "With", "From", "This", "That", "Here", "There", "When", "Where",
-            "Et", "Ou", "Le", "La", "Les", "Est", "Sont", "Avec", "Pour", "Dans",
+            "And", "Or", "The", "Is", "Was", "Are", "Were", "Has", "Have", "Had", "For", "With",
+            "From", "This", "That", "Here", "There", "When", "Where", "Et", "Ou", "Le", "La",
+            "Les", "Est", "Sont", "Avec", "Pour", "Dans",
         ]
         .iter()
         .cloned()
