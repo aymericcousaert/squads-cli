@@ -808,20 +808,35 @@ async fn run_app(
                                 }
                             }
                             KeyCode::Left => {
-                                if key.modifiers.contains(KeyModifiers::ALT) {
-                                    // Alt+Left: move word left
+                                if key.modifiers.contains(KeyModifiers::ALT)
+                                    || key.modifiers.contains(KeyModifiers::CONTROL)
+                                {
+                                    // Alt+Left or Ctrl+Left: move word left
                                     app.move_cursor_word_left();
                                 } else {
                                     app.move_cursor_left();
                                 }
                             }
                             KeyCode::Right => {
-                                if key.modifiers.contains(KeyModifiers::ALT) {
-                                    // Alt+Right: move word right
+                                if key.modifiers.contains(KeyModifiers::ALT)
+                                    || key.modifiers.contains(KeyModifiers::CONTROL)
+                                {
+                                    // Alt+Right or Ctrl+Right: move word right
                                     app.move_cursor_word_right();
                                 } else {
                                     app.move_cursor_right();
                                 }
+                            }
+                            // Also support Ctrl+B/F for word navigation (emacs style)
+                            KeyCode::Char('b')
+                                if key.modifiers.contains(KeyModifiers::ALT) =>
+                            {
+                                app.move_cursor_word_left();
+                            }
+                            KeyCode::Char('f')
+                                if key.modifiers.contains(KeyModifiers::ALT) =>
+                            {
+                                app.move_cursor_word_right();
                             }
                             KeyCode::Home => {
                                 app.move_cursor_to_start();
