@@ -389,6 +389,71 @@ impl TeamsClient {
         }
     }
 
+    /// Debug: Print thread structure to understand root vs reply messages
+    pub async fn debug_thread_structure(
+        &self,
+        team_id: &str,
+        channel_id: &str,
+    ) -> Result<()> {
+        let conversations = self.get_team_conversations(team_id, channel_id).await?;
+
+        eprintln!("\n=== Thread Structure Debug ===");
+        eprintln!("Total threads (reply_chains): {}\n", conversations.reply_chains.len());
+
+        for (i, chain) in conversations.reply_chains.iter().enumerate().take(10) {
+            eprintln!("--- Thread {} ---", i);
+            eprintln!("  Chain ID: {}", chain.id);
+            eprintln!("  Container ID: {}", chain.container_id);
+            eprintln!("  Message count: {}", chain.messages.len());
+
+            for (j, msg) in chain.messages.iter().take(3).enumerate() {
+                let content_preview = msg.content.as_deref()
+                    .unwrap_or("")
+                    .chars()
+                    .take(40)
+                    .collect::<String>();
+                eprintln!("    [{}] ID: {:?}", j, msg.id);
+                eprintln!("        From: {:?}", msg.im_display_name);
+                eprintln!("        Content: {}...", content_preview);
+            }
+            eprintln!();
+        }
+
+        Ok(())
+    }
+
+    /// Find the root message ID of a thread containing the given message
+    /// If the message_id is already a root, returns it as-is
+    /// If the message_id is a reply within a thread, returns the thread's root message ID
+    pub async fn find_thread_root(
+        &self,
+        team_id: &str,
+        channel_id: &str,
+        message_id: &str,
+    ) -> Result<String> {
+        let conversations = self.get_team_conversations(team_id, channel_id).await?;
+
+        // Search all chains to find which one contains this message
+        for chain in &conversations.reply_chains {
+            // Check if message_id matches the chain ID (it's already the root)
+            if chain.id == message_id {
+                return Ok(chain.id.clone());
+            }
+
+            // Check if message_id is in this chain's messages
+            for msg in &chain.messages {
+                if msg.id.as_deref() == Some(message_id) {
+                    // Found the message - return the chain ID (root)
+                    return Ok(chain.id.clone());
+                }
+            }
+        }
+
+        // Message not found in any thread - it might be a root message itself
+        // or the conversations haven't been fetched yet, so return as-is
+        Ok(message_id.to_string())
+    }
+
     /// Process @mentions in content and return (processed_content, mentions_json)
     /// Looks up user by name and replaces @Name with proper Teams mention spans
     pub async fn process_mentions(&self, content: &str) -> Result<(String, String)> {
@@ -563,9 +628,10 @@ impl TeamsClient {
     }
 
     /// Reply to a message in a team channel using Teams internal API
+    /// Note: This will find the thread root if the given message_id is a reply within a thread
     pub async fn reply_channel_message(
         &self,
-        _team_id: &str,
+        team_id: &str,
         channel_id: &str,
         parent_message_id: &str,
         content: &str,
@@ -573,12 +639,19 @@ impl TeamsClient {
         let token = self.get_token(SCOPE_IC3).await?;
         let me = self.get_me().await?;
 
+        // Find the thread root message ID
+        // The provided message_id might be a reply within a thread, not the root
+        let root_message_id = self
+            .find_thread_root(team_id, channel_id, parent_message_id)
+            .await
+            .unwrap_or_else(|_| parent_message_id.to_string());
+
         // Process mentions in content
         let (processed_content, mentions_json) = self.process_mentions(content).await?;
 
         // For channel thread replies, post to the thread conversation
-        // The thread ID format is: {channel_id};messageid={parent_message_id}
-        let thread_id = format!("{};messageid={}", channel_id, parent_message_id);
+        // The thread ID format is: {channel_id};messageid={root_message_id}
+        let thread_id = format!("{};messageid={}", channel_id, root_message_id);
         let url = format!(
             "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages",
             thread_id

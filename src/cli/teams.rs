@@ -130,6 +130,15 @@ pub enum TeamsSubcommand {
         #[arg(short, long)]
         output: Option<String>,
     },
+
+    /// Debug: Show thread structure (for investigating reply issues)
+    DebugThreads {
+        /// Team ID
+        team_id: String,
+
+        /// Channel ID
+        channel_id: String,
+    },
 }
 
 #[derive(Debug, Serialize, Tabled)]
@@ -249,6 +258,10 @@ pub async fn execute(cmd: TeamsCommand, config: &Config, format: OutputFormat) -
         TeamsSubcommand::DownloadImage { image_url, output } => {
             download_image(config, &image_url, output).await
         }
+        TeamsSubcommand::DebugThreads {
+            team_id,
+            channel_id,
+        } => debug_threads(config, &team_id, &channel_id).await,
     }
 }
 
@@ -610,4 +623,9 @@ async fn download_image(config: &Config, image_url: &str, output: Option<String>
     ));
 
     Ok(())
+}
+
+async fn debug_threads(config: &Config, team_id: &str, channel_id: &str) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    client.debug_thread_structure(team_id, channel_id).await
 }
