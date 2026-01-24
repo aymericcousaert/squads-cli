@@ -22,6 +22,7 @@ Search across both Mail and Calendar simultaneously.
 - **Send Message**: `squads-cli chats send <chat-id> "<content>"`
   - Support for `--markdown` and `--stdin`.
 - **Reply**: `squads-cli chats reply <chat-id> --message-id <msg-id> "<content>"`
+  - Support for `--markdown`.
 - **React**: `squads-cli chats react <chat-id> --message-id <msg-id> <reaction>` (e.g., like, heart, laugh, surprised, sad, angry)
 - **View Reactions**: `squads-cli chats reactions <chat-id> --message-id <msg-id>` (see who reacted to a message)
 - **View Mentions**: `squads-cli chats mentions` (find messages where you are @mentioned)
@@ -55,6 +56,7 @@ Search across both Mail and Calendar simultaneously.
 - **Post to Channel**: `squads-cli teams post <team-id> <channel-id> "<message>"`
   - Support for `--subject`, `--markdown`, and `--stdin`.
 - **Reply in Channel**: `squads-cli teams reply <team-id> <channel-id> --message-id <id> "<reply>"`
+  - Support for `--markdown` and `--html`.
 - **List Images**: `squads-cli teams images <team-id> <channel-id>` (list images in channel messages)
 - **Download Image**: `squads-cli teams download-image <url> --output ./image.png`
 
@@ -68,7 +70,7 @@ Search across both Mail and Calendar simultaneously.
 1. **Structured Output**: Always use `--format json` when you need to parse results programmatically (e.g., extracting `chat-id` or `msg-id`).
 2. **Context Discovery**: Start by listing chats or mail to find relevant IDs before performing actions.
 3. **Availability Checks**: When scheduling, use `free-busy` first to find common slots.
-4. **Markdown**: Prefer `--markdown` for Teams messages to ensure rich formatting (bold, links, code blocks) is preserved.
+4. **Markdown**: **ALWAYS** use `--markdown` when your message contains formatting characters like `**bold**`, `` `code` ``, or ` ``` ` code blocks. Without this flag, these characters are sent as literal text and won't render properly in Teams.
 5. **Check Presence Before Reaching Out**: Use `squads-cli users presence --user "<email>"` to check if someone is Available/Busy/Away before messaging.
 6. **Find Users by Name**: Use `squads-cli users search "John"` to find user email/ID for messaging.
 7. **Monitor Mentions**: Use `squads-cli chats mentions` or `squads-cli feed --mentions-only` to find messages that need your attention.
