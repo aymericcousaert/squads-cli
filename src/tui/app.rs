@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 
 use crate::api::TeamsClient;
 use crate::config::Config;
-use crate::types::{Channel, Chat, MailMessage, Message, Team};
+use crate::types::{Chat, MailMessage, Message, Team};
 
 use super::ui;
 
@@ -698,10 +698,14 @@ async fn run_app(
                                     Panel::Chats => {
                                         if app.left_panel_view == LeftPanelView::Chats {
                                             app.selected_chat = app.chats.len().saturating_sub(1);
-                                        } else if let Some(last_team) = app.teams.last() {
-                                            app.selected_team = app.teams.len().saturating_sub(1);
-                                            app.selected_channel =
-                                                last_team.channels.len().saturating_sub(1);
+                                        } else if !app.teams.is_empty() {
+                                            let last_team_idx = app.teams.len() - 1;
+                                            let last_channel_idx = app.teams[last_team_idx]
+                                                .channels
+                                                .len()
+                                                .saturating_sub(1);
+                                            app.selected_team = last_team_idx;
+                                            app.selected_channel = last_channel_idx;
                                         }
                                     }
                                     Panel::Messages => {
