@@ -43,20 +43,24 @@ pub enum ChatsSubcommand {
         /// Chat ID
         chat_id: String,
 
-        /// Message content (omit to read from stdin)
+        /// Message content
         message: Option<String>,
 
         /// Read message from stdin
-        #[arg(long)]
+        #[arg(short, long)]
         stdin: bool,
 
         /// Read message from file
-        #[arg(long)]
+        #[arg(short, long)]
         file: Option<String>,
 
-        /// Enable Markdown formatting (converts ** to bold and \n to line breaks)
+        /// Treat message as Markdown and convert to HTML
         #[arg(short, long)]
         markdown: bool,
+
+        /// Send raw HTML without escaping
+        #[arg(long)]
+        html: bool,
     },
 
     /// Create a new chat
@@ -149,7 +153,8 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
             stdin,
             file,
             markdown,
-        } => send(config, &chat_id, message, stdin, file, markdown).await,
+            html,
+        } => send(config, &chat_id, message, stdin, file, markdown, html).await,
         ChatsSubcommand::Create { members, topic } => create(config, &members, topic, format).await,
         ChatsSubcommand::Reply {
             chat_id,
@@ -271,6 +276,7 @@ async fn send(
     stdin: bool,
     file: Option<String>,
     markdown: bool,
+    html: bool,
 ) -> Result<()> {
     let content = if let Some(msg) = message {
         msg
@@ -292,7 +298,9 @@ async fn send(
 
     let client = TeamsClient::new(config)?;
 
-    let html_body = if markdown {
+    let html_body = if html {
+        content
+    } else if markdown {
         // Use markdown crate for proper MD -> HTML conversion
         markdown::to_html(&content)
     } else {
