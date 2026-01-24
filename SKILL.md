@@ -71,6 +71,16 @@ Search across both Mail and Calendar simultaneously.
 7. **Monitor Mentions**: Use `squads-cli chats mentions` or `squads-cli feed --mentions-only` to find messages that need your attention.
 8. **Access Shared Content**: Use `squads-cli chats images` and `squads-cli chats files` to list and download content shared in chats.
 
+## Authentication
+
+- **Login**: `squads-cli auth login`
+  - Automatically opens browser for authentication
+  - `-c, --copy-code`: Copy the auth code to clipboard automatically
+  - `--no-browser`: Disable automatic browser opening
+- **Check Status**: `squads-cli auth status`
+- **Refresh Tokens**: `squads-cli auth refresh`
+- **Logout**: `squads-cli auth logout`
+
 ## Installation / Setup
 If the tool is not in the path, it can be installed via:
 `squads-cli install` (copies to `~/.local/bin/`)

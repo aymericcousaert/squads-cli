@@ -56,6 +56,10 @@ markdown = "1.0.0"
 # Desktop notifications
 notify-rust = "4"
 
+# Browser & clipboard
+open = "5"
+arboard = "3"
+
 [features]
 default = []
 tui = ["ratatui", "crossterm"]

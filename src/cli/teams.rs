@@ -258,7 +258,10 @@ async fn messages(
                         .unwrap_or_else(|| msg.from.unwrap_or_else(|| "Unknown".to_string())),
                     subject: truncate(&subject, 20),
                     time: msg.original_arrival_time.unwrap_or_default(),
-                    content: truncate(&content, 40),
+                    content: match format {
+                        OutputFormat::Json => content.clone(),
+                        _ => truncate(&content, 40),
+                    },
                 });
 
                 if rows.len() >= limit {
