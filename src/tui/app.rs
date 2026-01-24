@@ -42,6 +42,7 @@ pub struct App {
     pub active_panel: Panel,
     pub mode: Mode,
     pub input: String,
+    pub input_cursor: usize,  // Cursor position in input (character index)
     pub command_input: String,
     pub status_message: String,
     pub should_quit: bool,
@@ -64,6 +65,7 @@ impl App {
             active_panel: Panel::Chats,
             mode: Mode::Normal,
             input: String::new(),
+            input_cursor: 0,
             command_input: String::new(),
             status_message: String::from("Press ? for help | q to quit"),
             should_quit: false,
@@ -160,11 +162,14 @@ impl App {
         }
 
         if let Some(chat_id) = &self.current_chat_id {
-            let content = format!("<p>{}</p>", html_escape(&self.input));
+            // Convert newlines to <br> for multi-line messages
+            let escaped = html_escape(&self.input);
+            let with_breaks = escaped.replace('\n', "<br>");
+            let content = format!("<p>{}</p>", with_breaks);
             match self.client.send_message(chat_id, &content, None).await {
                 Ok(_) => {
                     self.status_message = "Message sent! Refreshing...".to_string();
-                    self.input.clear();
+                    self.clear_input();
                     // Delay to let the API process the message (increased for reliability)
                     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                     // Reload messages
@@ -214,15 +219,119 @@ impl App {
     }
 
     pub fn delete_word(&mut self) {
-        // Delete characters backwards until we hit a word boundary
-        // First, trim trailing spaces
-        while self.input.ends_with(' ') {
-            self.input.pop();
+        // Delete word before cursor
+        if self.input_cursor == 0 {
+            return;
         }
-        // Then delete until next space or beginning
-        while !self.input.is_empty() && !self.input.ends_with(' ') {
-            self.input.pop();
+
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut new_cursor = self.input_cursor;
+
+        // Skip spaces before cursor
+        while new_cursor > 0 && chars[new_cursor - 1] == ' ' {
+            new_cursor -= 1;
         }
+        // Skip non-spaces (the word)
+        while new_cursor > 0 && chars[new_cursor - 1] != ' ' {
+            new_cursor -= 1;
+        }
+
+        // Remove characters from new_cursor to input_cursor
+        let before: String = chars[..new_cursor].iter().collect();
+        let after: String = chars[self.input_cursor..].iter().collect();
+        self.input = before + &after;
+        self.input_cursor = new_cursor;
+    }
+
+    pub fn insert_char(&mut self, c: char) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let before: String = chars[..self.input_cursor].iter().collect();
+        let after: String = chars[self.input_cursor..].iter().collect();
+        self.input = before + &c.to_string() + &after;
+        self.input_cursor += 1;
+    }
+
+    pub fn insert_newline(&mut self) {
+        self.insert_char('\n');
+    }
+
+    pub fn delete_char_before_cursor(&mut self) {
+        if self.input_cursor == 0 {
+            return;
+        }
+        let chars: Vec<char> = self.input.chars().collect();
+        let before: String = chars[..self.input_cursor - 1].iter().collect();
+        let after: String = chars[self.input_cursor..].iter().collect();
+        self.input = before + &after;
+        self.input_cursor -= 1;
+    }
+
+    pub fn move_cursor_left(&mut self) {
+        if self.input_cursor > 0 {
+            self.input_cursor -= 1;
+        }
+    }
+
+    pub fn move_cursor_right(&mut self) {
+        let len = self.input.chars().count();
+        if self.input_cursor < len {
+            self.input_cursor += 1;
+        }
+    }
+
+    pub fn move_cursor_word_left(&mut self) {
+        if self.input_cursor == 0 {
+            return;
+        }
+
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut new_cursor = self.input_cursor;
+
+        // Skip spaces before cursor
+        while new_cursor > 0 && chars[new_cursor - 1] == ' ' {
+            new_cursor -= 1;
+        }
+        // Skip non-spaces (the word)
+        while new_cursor > 0 && chars[new_cursor - 1] != ' ' {
+            new_cursor -= 1;
+        }
+
+        self.input_cursor = new_cursor;
+    }
+
+    pub fn move_cursor_word_right(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let len = chars.len();
+
+        if self.input_cursor >= len {
+            return;
+        }
+
+        let mut new_cursor = self.input_cursor;
+
+        // Skip current word
+        while new_cursor < len && chars[new_cursor] != ' ' {
+            new_cursor += 1;
+        }
+        // Skip spaces
+        while new_cursor < len && chars[new_cursor] == ' ' {
+            new_cursor += 1;
+        }
+
+        self.input_cursor = new_cursor;
+    }
+
+    pub fn move_cursor_to_start(&mut self) {
+        self.input_cursor = 0;
+    }
+
+    pub fn move_cursor_to_end(&mut self) {
+        self.input_cursor = self.input.chars().count();
+    }
+
+    pub fn clear_input(&mut self) {
+        self.input.clear();
+        self.input_cursor = 0;
     }
 }
 
@@ -371,16 +480,52 @@ async fn run_app(
                                 app.status_message = "Press ? for help".to_string();
                             }
                             KeyCode::Enter => {
-                                app.send_message().await?;
-                                app.mode = Mode::Normal;
+                                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                    // Shift+Enter: insert newline
+                                    app.insert_newline();
+                                } else {
+                                    // Enter: send message
+                                    app.send_message().await?;
+                                    app.mode = Mode::Normal;
+                                }
                             }
                             KeyCode::Backspace => {
                                 if key.modifiers.contains(KeyModifiers::ALT) {
                                     // Alt+Backspace: delete word
                                     app.delete_word();
                                 } else {
-                                    app.input.pop();
+                                    app.delete_char_before_cursor();
                                 }
+                            }
+                            KeyCode::Left => {
+                                if key.modifiers.contains(KeyModifiers::ALT) {
+                                    // Alt+Left: move word left
+                                    app.move_cursor_word_left();
+                                } else {
+                                    app.move_cursor_left();
+                                }
+                            }
+                            KeyCode::Right => {
+                                if key.modifiers.contains(KeyModifiers::ALT) {
+                                    // Alt+Right: move word right
+                                    app.move_cursor_word_right();
+                                } else {
+                                    app.move_cursor_right();
+                                }
+                            }
+                            KeyCode::Home => {
+                                app.move_cursor_to_start();
+                            }
+                            KeyCode::End => {
+                                app.move_cursor_to_end();
+                            }
+                            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                // Ctrl+A: go to start
+                                app.move_cursor_to_start();
+                            }
+                            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                // Ctrl+E: go to end
+                                app.move_cursor_to_end();
                             }
                             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 // Ctrl+W: delete word (vim style)
@@ -388,10 +533,10 @@ async fn run_app(
                             }
                             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 // Ctrl+U: clear line
-                                app.input.clear();
+                                app.clear_input();
                             }
                             KeyCode::Char(c) => {
-                                app.input.push(c);
+                                app.insert_char(c);
                             }
                             _ => {}
                         }

@@ -258,7 +258,7 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let input_title = match app.mode {
-        Mode::Insert => " Compose (Enter to send, Esc to cancel) ",
+        Mode::Insert => " Compose (Enter: send, Shift+Enter: newline, Esc: cancel) ",
         Mode::Command => " Command ",
         Mode::Normal => " Press 'i' to compose ",
     };
@@ -280,10 +280,35 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
 
     f.render_widget(input, area);
 
-    // Show cursor in insert mode - use character count, not byte length for UTF-8
+    // Show cursor in insert mode
     if app.mode == Mode::Insert {
-        let char_count = app.input.chars().count() as u16;
-        f.set_cursor_position((area.x + char_count + 1, area.y + 1));
+        // Calculate cursor position accounting for newlines
+        let chars: Vec<char> = app.input.chars().collect();
+        let chars_before_cursor = &chars[..app.input_cursor.min(chars.len())];
+
+        // Find the last newline before cursor to determine row and column
+        let mut row = 0u16;
+        let mut col = 0u16;
+        for c in chars_before_cursor {
+            if *c == '\n' {
+                row += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+
+        // Account for wrapping within the input area width
+        let inner_width = area.width.saturating_sub(2) as u16;
+        if inner_width > 0 {
+            row += col / inner_width;
+            col = col % inner_width;
+        }
+
+        f.set_cursor_position((
+            area.x + col + 1,
+            area.y + row + 1,
+        ));
     } else if app.mode == Mode::Command {
         let char_count = app.command_input.chars().count() as u16;
         f.set_cursor_position((area.x + char_count + 2, area.y + 1));
