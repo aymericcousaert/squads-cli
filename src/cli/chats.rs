@@ -447,7 +447,20 @@ async fn send(
         content
     } else if markdown {
         // Use markdown crate for proper MD -> HTML conversion
-        markdown::to_html(&content)
+        markdown::to_html_with_options(
+            &content,
+            &markdown::Options {
+                parse: markdown::ParseOptions {
+                    constructs: markdown::Constructs {
+                        gfm_table: true,
+                        ..markdown::Constructs::gfm()
+                    },
+                    ..markdown::ParseOptions::gfm()
+                },
+                ..markdown::Options::gfm()
+            },
+        )
+        .unwrap_or_else(|_| content.clone())
     } else {
         // Convert plain text to simple HTML
         format!("<p>{}</p>", html_escape(&content))
@@ -547,7 +560,20 @@ async fn reply(
     let html_body = if html {
         content.to_string()
     } else if markdown {
-        markdown::to_html(content)
+        markdown::to_html_with_options(
+            content,
+            &markdown::Options {
+                parse: markdown::ParseOptions {
+                    constructs: markdown::Constructs {
+                        gfm_table: true,
+                        ..markdown::Constructs::gfm()
+                    },
+                    ..markdown::ParseOptions::gfm()
+                },
+                ..markdown::Options::gfm()
+            },
+        )
+        .unwrap_or_else(|_| content.to_string())
     } else {
         format!("<p>{}</p>", html_escape(content))
     };
