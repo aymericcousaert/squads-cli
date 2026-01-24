@@ -85,8 +85,11 @@ pub enum ChatsSubcommand {
 
         /// Reply content
         content: String,
-    },
 
+        /// Send raw HTML without escaping
+        #[arg(long)]
+        html: bool,
+    },
     /// Delete a message
     Delete {
         /// Chat ID
@@ -281,7 +284,8 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
             chat_id,
             message_id,
             content,
-        } => reply(config, &chat_id, &message_id, &content).await,
+            html,
+        } => reply(config, &chat_id, &message_id, &content, html).await,
         ChatsSubcommand::Delete {
             chat_id,
             message_id,
@@ -525,11 +529,22 @@ async fn create(
     Ok(())
 }
 
-async fn reply(config: &Config, chat_id: &str, message_id: &str, content: &str) -> Result<()> {
+async fn reply(
+    config: &Config,
+    chat_id: &str,
+    message_id: &str,
+    content: &str,
+    html: bool,
+) -> Result<()> {
     let client = TeamsClient::new(config)?;
-    client
-        .reply_to_message(chat_id, message_id, content)
-        .await?;
+
+    let html_body = if html {
+        content.to_string()
+    } else {
+        format!("<p>{}</p>", html_escape(content))
+    };
+
+    client.reply_to_message(chat_id, message_id, &html_body).await?;
     print_success("Reply sent");
     Ok(())
 }

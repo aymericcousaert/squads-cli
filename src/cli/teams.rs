@@ -89,8 +89,11 @@ pub enum TeamsSubcommand {
         /// Treat content as Markdown and convert to HTML
         #[arg(short, long)]
         markdown: bool,
-    },
 
+        /// Send raw HTML without escaping
+        #[arg(long)]
+        html: bool,
+    },
     /// Delete a message from a team channel
     Delete {
         /// Team ID
@@ -172,6 +175,7 @@ pub async fn execute(cmd: TeamsCommand, config: &Config, format: OutputFormat) -
             message_id,
             content,
             markdown,
+            html,
         } => {
             reply(
                 config,
@@ -180,6 +184,7 @@ pub async fn execute(cmd: TeamsCommand, config: &Config, format: OutputFormat) -
                 &message_id,
                 &content,
                 markdown,
+                html,
             )
             .await
         }
@@ -394,6 +399,7 @@ async fn reply(
     message_id: &str,
     content: &str,
     markdown: bool,
+    html: bool,
 ) -> Result<()> {
     if content.is_empty() {
         print_error("Reply content cannot be empty");
@@ -402,7 +408,9 @@ async fn reply(
 
     let client = TeamsClient::new(config)?;
 
-    let html_body = if markdown {
+    let html_body = if html {
+        content.to_string()
+    } else if markdown {
         markdown::to_html(content)
     } else {
         format!("<p>{}</p>", html_escape(content))
