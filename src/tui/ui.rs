@@ -299,10 +299,10 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
         }
 
         // Account for wrapping within the input area width
-        let inner_width = area.width.saturating_sub(2) as u16;
+        let inner_width = area.width.saturating_sub(2);
         if inner_width > 0 {
             row += col / inner_width;
-            col = col % inner_width;
+            col %= inner_width;
         }
 
         f.set_cursor_position((area.x + col + 1, area.y + row + 1));

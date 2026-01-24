@@ -38,7 +38,6 @@ pub struct App {
     pub emails: Vec<MailMessage>,
     pub selected_chat: usize,
     pub selected_message: usize,
-    pub scroll_offset: usize,
     pub active_panel: Panel,
     pub mode: Mode,
     pub input: String,
@@ -61,7 +60,6 @@ impl App {
             emails: Vec::new(),
             selected_chat: 0,
             selected_message: 0,
-            scroll_offset: 0,
             active_panel: Panel::Chats,
             mode: Mode::Normal,
             input: String::new(),
@@ -208,14 +206,6 @@ impl App {
         if !self.messages.is_empty() {
             self.selected_message = self.selected_message.saturating_sub(1);
         }
-    }
-
-    pub fn scroll_down(&mut self) {
-        self.scroll_offset = self.scroll_offset.saturating_add(1);
-    }
-
-    pub fn scroll_up(&mut self) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(1);
     }
 
     pub fn delete_word(&mut self) {

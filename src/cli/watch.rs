@@ -162,9 +162,8 @@ async fn check_new_messages(client: &TeamsClient, seen: &mut HashSet<String>, cm
 
             if !cmd.quiet {
                 println!(
-                    "{} {} {} {}",
+                    "{} 💬 {} {}",
                     format!("[{}]", time).dimmed(),
-                    "💬".to_string(),
                     format!("{}:", sender).cyan().bold(),
                     truncate(&content, 80)
                 );
@@ -225,9 +224,8 @@ async fn check_new_emails(client: &TeamsClient, seen: &mut HashSet<String>, cmd:
 
         if !cmd.quiet {
             println!(
-                "{} {} {} {}",
+                "{} 📧 {} {}",
                 format!("[{}]", time).dimmed(),
-                "📧".to_string(),
                 format!("{}:", sender).yellow().bold(),
                 truncate(&subject, 60)
             );
