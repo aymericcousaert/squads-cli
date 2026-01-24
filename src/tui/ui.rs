@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{App, Mode, Panel};
+use super::app::{App, LeftPanelView, Mode, Panel};
 
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -41,64 +41,96 @@ fn draw_chats(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
-    // Calculate max width for chat names (area width - borders - unread marker)
+    // Calculate max width for names (area width - borders - unread marker)
     let max_name_width = area.width.saturating_sub(5) as usize;
 
-    let items: Vec<ListItem> = app
-        .chats
-        .iter()
-        .enumerate()
-        .map(|(i, chat)| {
-            let title = chat.title.clone().unwrap_or_else(|| {
-                // Try to get name from last message sender (if not from me)
-                if let Some(last_msg) = &chat.last_message {
-                    if chat.is_last_message_from_me != Some(true) {
-                        if let Some(name) = &last_msg.im_display_name {
-                            return name.clone();
-                        }
-                    }
+    match app.left_panel_view {
+        LeftPanelView::Chats => {
+            let items: Vec<ListItem> = app
+                .chats
+                .iter()
+                .enumerate()
+                .map(|(i, chat)| {
+                    let title = app.get_chat_display_name(chat);
+
+                    let unread_marker = if chat.is_read == Some(false) {
+                        "● "
+                    } else {
+                        "  "
+                    };
+                    let display = format!("{}{}", unread_marker, truncate(&title, max_name_width));
+
+                    let style = if i == app.selected_chat && is_active {
+                        Style::default()
+                            .bg(Color::Cyan)
+                            .fg(Color::Black)
+                            .add_modifier(Modifier::BOLD)
+                    } else if i == app.selected_chat {
+                        Style::default().bg(Color::DarkGray).fg(Color::White)
+                    } else if chat.is_read == Some(false) {
+                        Style::default().fg(Color::Yellow)
+                    } else {
+                        Style::default()
+                    };
+
+                    ListItem::new(display).style(style)
+                })
+                .collect();
+
+            let title = format!(" [1] Chats ({}) ", app.chats.len());
+            let chats = List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(border_style)
+                    .title(title),
+            );
+
+            f.render_widget(chats, area);
+        }
+        LeftPanelView::Channels => {
+            // Build flat list of team > channel
+            let mut items: Vec<ListItem> = Vec::new();
+
+            for (team_idx, team) in app.teams.iter().enumerate() {
+                // Team header
+                let team_style = Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD);
+                items.push(ListItem::new(format!("▼ {}", team.display_name)).style(team_style));
+
+                // Channels under this team
+                for (chan_idx, channel) in team.channels.iter().enumerate() {
+                    let is_selected =
+                        team_idx == app.selected_team && chan_idx == app.selected_channel;
+                    let style = if is_selected && is_active {
+                        Style::default()
+                            .bg(Color::Cyan)
+                            .fg(Color::Black)
+                            .add_modifier(Modifier::BOLD)
+                    } else if is_selected {
+                        Style::default().bg(Color::DarkGray).fg(Color::White)
+                    } else {
+                        Style::default()
+                    };
+
+                    let display =
+                        format!("  # {}", truncate(&channel.display_name, max_name_width));
+                    items.push(ListItem::new(display).style(style));
                 }
-                // Fallback to showing member count
-                if chat.is_one_on_one == Some(true) {
-                    "1:1 Chat".to_string()
-                } else {
-                    format!("Group ({} members)", chat.members.len())
-                }
-            });
+            }
 
-            let unread_marker = if chat.is_read == Some(false) {
-                "● "
-            } else {
-                "  "
-            };
-            let display = format!("{}{}", unread_marker, truncate(&title, max_name_width));
+            let channel_count: usize = app.teams.iter().map(|t| t.channels.len()).sum();
+            let title = format!(" [2] Channels ({}) ", channel_count);
+            let channels = List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(border_style)
+                    .title(title),
+            );
 
-            let style = if i == app.selected_chat && is_active {
-                Style::default()
-                    .bg(Color::Cyan)
-                    .fg(Color::Black)
-                    .add_modifier(Modifier::BOLD)
-            } else if i == app.selected_chat {
-                Style::default().bg(Color::DarkGray).fg(Color::White)
-            } else if chat.is_read == Some(false) {
-                Style::default().fg(Color::Yellow)
-            } else {
-                Style::default()
-            };
-
-            ListItem::new(display).style(style)
-        })
-        .collect();
-
-    let title = format!(" Chats ({}) ", app.chats.len());
-    let chats = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(border_style)
-            .title(title),
-    );
-
-    f.render_widget(chats, area);
+            f.render_widget(channels, area);
+        }
+    }
 }
 
 fn draw_messages(f: &mut Frame, app: &App, area: Rect) {

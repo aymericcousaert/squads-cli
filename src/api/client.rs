@@ -285,6 +285,36 @@ impl TeamsClient {
         }
     }
 
+    /// Get a user by their ID (object_id from MRI)
+    pub async fn get_user_by_id(&self, user_id: &str) -> Result<Option<Profile>> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/users/{}?$select=id,displayName,mail",
+            user_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            Ok(Some(
+                serde_json::from_str(&body).context("Failed to parse user")?,
+            ))
+        } else if res.status() == 404 {
+            Ok(None)
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to get user: {} - {}", status, body))
+        }
+    }
+
     /// Get conversations/messages from a chat
     pub async fn get_conversations(
         &self,

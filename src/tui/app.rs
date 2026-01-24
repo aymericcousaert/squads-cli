@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,7 +14,7 @@ use tokio::sync::Mutex;
 
 use crate::api::TeamsClient;
 use crate::config::Config;
-use crate::types::{Chat, MailMessage, Message};
+use crate::types::{Channel, Chat, MailMessage, Message, Team};
 
 use super::ui;
 
@@ -22,6 +23,12 @@ pub enum Panel {
     Chats,
     Messages,
     Input,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LeftPanelView {
+    Chats,
+    Channels,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -49,6 +56,16 @@ pub struct App {
     pub unread_messages: usize,
     pub loading: bool,
     pub current_chat_id: Option<String>,
+    // Teams channels support
+    pub left_panel_view: LeftPanelView,
+    pub teams: Vec<Team>,
+    pub selected_team: usize,
+    pub selected_channel: usize,
+    pub current_team_id: Option<String>,
+    pub current_channel_id: Option<String>,
+    // User name cache (user_id -> display_name)
+    pub user_names: HashMap<String, String>,
+    pub my_user_id: Option<String>,
 }
 
 impl App {
@@ -65,12 +82,22 @@ impl App {
             input: String::new(),
             input_cursor: 0,
             command_input: String::new(),
-            status_message: String::from("Press ? for help | q to quit"),
+            status_message: String::from("Press ? for help | 1: Chats | 2: Channels | q to quit"),
             should_quit: false,
             unread_emails: 0,
             unread_messages: 0,
             loading: false,
             current_chat_id: None,
+            // Teams channels
+            left_panel_view: LeftPanelView::Chats,
+            teams: Vec::new(),
+            selected_team: 0,
+            selected_channel: 0,
+            current_team_id: None,
+            current_channel_id: None,
+            // User cache
+            user_names: HashMap::new(),
+            my_user_id: None,
         }
     }
 
@@ -78,7 +105,7 @@ impl App {
         self.loading = true;
         self.status_message = "Loading...".to_string();
 
-        // Load chats
+        // Load chats and teams
         match self.client.get_user_details().await {
             Ok(details) => {
                 self.unread_messages = details
@@ -87,9 +114,52 @@ impl App {
                     .filter(|c| c.is_read == Some(false))
                     .count();
                 self.chats = details.chats;
+                self.teams = details.teams;
+                // Store my user ID (from the first chat where I'm a member)
+                if self.my_user_id.is_none() {
+                    for chat in &self.chats {
+                        // Try to find my ID by checking last_message sender
+                        if chat.is_last_message_from_me == Some(true) {
+                            if let Some(last_msg) = &chat.last_message {
+                                if let Some(from) = &last_msg.from {
+                                    // Extract user ID from MRI like "8:orgid:xxxx"
+                                    if let Some(id) = from.strip_prefix("8:orgid:") {
+                                        self.my_user_id = Some(id.to_string());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 self.status_message = format!("Error loading chats: {}", e);
+            }
+        }
+
+        // Resolve member names for chats (collect unique IDs first)
+        let mut unique_ids: Vec<String> = Vec::new();
+        for chat in &self.chats {
+            for member in &chat.members {
+                if let Some(obj_id) = &member.object_id {
+                    if !self.user_names.contains_key(obj_id)
+                        && !unique_ids.contains(obj_id)
+                        && Some(obj_id) != self.my_user_id.as_ref()
+                    {
+                        unique_ids.push(obj_id.clone());
+                    }
+                }
+            }
+        }
+
+        // Look up user names (limit to first 20 to avoid too many API calls)
+        self.status_message = format!("Resolving {} user names...", unique_ids.len().min(20));
+        for user_id in unique_ids.into_iter().take(20) {
+            if let Ok(Some(user)) = self.client.get_user_by_id(&user_id).await {
+                if let Some(name) = user.display_name {
+                    self.user_names.insert(user_id, name);
+                }
             }
         }
 
@@ -109,13 +179,75 @@ impl App {
         }
 
         self.loading = false;
+        let channel_count: usize = self.teams.iter().map(|t| t.channels.len()).sum();
         self.status_message = format!(
-            "Loaded {} chats | {} unread emails | Press ? for help",
+            "{} chats | {} channels | {} unread emails | 1/2: toggle view | ? for help",
             self.chats.len(),
+            channel_count,
             self.unread_emails
         );
 
         Ok(())
+    }
+
+    /// Get display name for a chat based on members
+    pub fn get_chat_display_name(&self, chat: &Chat) -> String {
+        // If chat has a title set, use it
+        if let Some(title) = &chat.title {
+            if !title.is_empty()
+                && title != "Direct Chat"
+                && title != "Group Chat"
+                && !title.starts_with("Group (")
+            {
+                return title.clone();
+            }
+        }
+
+        // Get member names, excluding myself
+        let member_names: Vec<String> = chat
+            .members
+            .iter()
+            .filter_map(|m| {
+                let obj_id = m.object_id.as_ref()?;
+                // Skip if this is me
+                if self.my_user_id.as_ref() == Some(obj_id) {
+                    return None;
+                }
+                // Look up name in cache
+                self.user_names.get(obj_id).cloned()
+            })
+            .collect();
+
+        if !member_names.is_empty() {
+            // Join names with "&"
+            if member_names.len() <= 3 {
+                return member_names.join(" & ");
+            } else {
+                // For many members, show first 2 and count
+                return format!(
+                    "{} & {} +{}",
+                    member_names[0],
+                    member_names[1],
+                    member_names.len() - 2
+                );
+            }
+        }
+
+        // Fallback: try to get name from last message sender (if not from me)
+        if let Some(last_msg) = &chat.last_message {
+            if chat.is_last_message_from_me != Some(true) {
+                if let Some(name) = &last_msg.im_display_name {
+                    return name.clone();
+                }
+            }
+        }
+
+        // Final fallback
+        if chat.is_one_on_one == Some(true) {
+            "1:1 Chat".to_string()
+        } else {
+            format!("Group ({} members)", chat.members.len())
+        }
     }
 
     pub async fn load_messages(&mut self) -> Result<()> {
@@ -162,29 +294,103 @@ impl App {
         Ok(())
     }
 
+    pub async fn load_channel_messages(&mut self) -> Result<()> {
+        if let Some(team) = self.teams.get(self.selected_team) {
+            if let Some(channel) = team.channels.get(self.selected_channel) {
+                self.current_team_id = Some(team.id.clone());
+                self.current_channel_id = Some(channel.id.clone());
+                self.current_chat_id = None; // Clear chat context
+                self.loading = true;
+                self.status_message = format!("Loading {} messages...", channel.display_name);
+
+                match self
+                    .client
+                    .get_team_conversations(&team.id, &channel.id)
+                    .await
+                {
+                    Ok(convs) => {
+                        let mut msgs: Vec<_> = convs
+                            .reply_chains
+                            .into_iter()
+                            .flat_map(|chain| chain.messages)
+                            .filter(|m| {
+                                let is_content_msg = m.message_type.as_deref()
+                                    == Some("RichText/Html")
+                                    || m.message_type.as_deref() == Some("Text");
+                                let is_deleted = m
+                                    .properties
+                                    .as_ref()
+                                    .map(|p| p.deletetime > 0)
+                                    .unwrap_or(false);
+                                is_content_msg && !is_deleted
+                            })
+                            .take(50)
+                            .collect();
+                        msgs.reverse();
+                        self.messages = msgs;
+                        self.selected_message = self.messages.len().saturating_sub(1);
+                    }
+                    Err(e) => {
+                        self.status_message = format!("Error: {}", e);
+                    }
+                }
+
+                self.loading = false;
+                self.status_message = format!(
+                    "#{} | {} messages | i to compose",
+                    channel.display_name,
+                    self.messages.len()
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub async fn send_message(&mut self) -> Result<()> {
         if self.input.is_empty() {
             return Ok(());
         }
 
-        if let Some(chat_id) = &self.current_chat_id {
-            // Convert newlines to <br> for multi-line messages
-            let escaped = html_escape(&self.input);
-            let with_breaks = escaped.replace('\n', "<br>");
-            let content = format!("<p>{}</p>", with_breaks);
+        // Convert newlines to <br> for multi-line messages
+        let escaped = html_escape(&self.input);
+        let with_breaks = escaped.replace('\n', "<br>");
+        let content = format!("<p>{}</p>", with_breaks);
+
+        if let Some(chat_id) = &self.current_chat_id.clone() {
+            // Send to chat
             match self.client.send_message(chat_id, &content, None).await {
                 Ok(_) => {
                     self.status_message = "Message sent! Refreshing...".to_string();
                     self.clear_input();
-                    // Delay to let the API process the message (increased for reliability)
                     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                    // Reload messages
                     self.load_messages().await?;
                 }
                 Err(e) => {
                     self.status_message = format!("Send failed: {}", e);
                 }
             }
+        } else if let (Some(team_id), Some(channel_id)) = (
+            self.current_team_id.clone(),
+            self.current_channel_id.clone(),
+        ) {
+            // Send to channel
+            match self
+                .client
+                .send_channel_message(&team_id, &channel_id, &content, None)
+                .await
+            {
+                Ok(_) => {
+                    self.status_message = "Message posted! Refreshing...".to_string();
+                    self.clear_input();
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                    self.load_channel_messages().await?;
+                }
+                Err(e) => {
+                    self.status_message = format!("Post failed: {}", e);
+                }
+            }
+        } else {
+            self.status_message = "No chat or channel selected".to_string();
         }
         Ok(())
     }
@@ -214,6 +420,44 @@ impl App {
         if !self.messages.is_empty() {
             self.selected_message = self.selected_message.saturating_sub(1);
         }
+    }
+
+    /// Navigate to next channel (within and across teams)
+    pub fn next_channel(&mut self) {
+        if self.teams.is_empty() {
+            return;
+        }
+
+        if let Some(team) = self.teams.get(self.selected_team) {
+            if self.selected_channel + 1 < team.channels.len() {
+                // Next channel in same team
+                self.selected_channel += 1;
+            } else if self.selected_team + 1 < self.teams.len() {
+                // First channel in next team
+                self.selected_team += 1;
+                self.selected_channel = 0;
+            }
+            // else: at the end, stay put
+        }
+    }
+
+    /// Navigate to previous channel (within and across teams)
+    pub fn previous_channel(&mut self) {
+        if self.teams.is_empty() {
+            return;
+        }
+
+        if self.selected_channel > 0 {
+            // Previous channel in same team
+            self.selected_channel -= 1;
+        } else if self.selected_team > 0 {
+            // Last channel in previous team
+            self.selected_team -= 1;
+            if let Some(team) = self.teams.get(self.selected_team) {
+                self.selected_channel = team.channels.len().saturating_sub(1);
+            }
+        }
+        // else: at the beginning, stay put
     }
 
     pub fn delete_word(&mut self) {
@@ -400,22 +644,50 @@ async fn run_app(
                         match key.code {
                             KeyCode::Char('q') => app.should_quit = true,
                             KeyCode::Char('?') => {
-                                app.status_message = "j/k: navigate | Enter: select | i: compose | Tab: switch panel | r: refresh | q: quit".to_string();
+                                app.status_message = "j/k: navigate | Enter: select | 1: chats | 2: channels | i: compose | r: refresh | q: quit".to_string();
+                            }
+                            // View switching with 1 and 2
+                            KeyCode::Char('1') => {
+                                app.left_panel_view = LeftPanelView::Chats;
+                                app.active_panel = Panel::Chats;
+                            }
+                            KeyCode::Char('2') => {
+                                app.left_panel_view = LeftPanelView::Channels;
+                                app.active_panel = Panel::Chats;
                             }
                             KeyCode::Char('j') | KeyCode::Down => match app.active_panel {
-                                Panel::Chats => app.next_chat(),
+                                Panel::Chats => {
+                                    if app.left_panel_view == LeftPanelView::Chats {
+                                        app.next_chat();
+                                    } else {
+                                        app.next_channel();
+                                    }
+                                }
                                 Panel::Messages => app.next_message(),
                                 _ => {}
                             },
                             KeyCode::Char('k') | KeyCode::Up => match app.active_panel {
-                                Panel::Chats => app.previous_chat(),
+                                Panel::Chats => {
+                                    if app.left_panel_view == LeftPanelView::Chats {
+                                        app.previous_chat();
+                                    } else {
+                                        app.previous_channel();
+                                    }
+                                }
                                 Panel::Messages => app.previous_message(),
                                 _ => {}
                             },
                             KeyCode::Char('g') => {
                                 // Go to top
                                 match app.active_panel {
-                                    Panel::Chats => app.selected_chat = 0,
+                                    Panel::Chats => {
+                                        if app.left_panel_view == LeftPanelView::Chats {
+                                            app.selected_chat = 0;
+                                        } else {
+                                            app.selected_team = 0;
+                                            app.selected_channel = 0;
+                                        }
+                                    }
                                     Panel::Messages => app.selected_message = 0,
                                     _ => {}
                                 }
@@ -424,7 +696,13 @@ async fn run_app(
                                 // Go to bottom
                                 match app.active_panel {
                                     Panel::Chats => {
-                                        app.selected_chat = app.chats.len().saturating_sub(1)
+                                        if app.left_panel_view == LeftPanelView::Chats {
+                                            app.selected_chat = app.chats.len().saturating_sub(1);
+                                        } else if let Some(last_team) = app.teams.last() {
+                                            app.selected_team = app.teams.len().saturating_sub(1);
+                                            app.selected_channel =
+                                                last_team.channels.len().saturating_sub(1);
+                                        }
                                     }
                                     Panel::Messages => {
                                         app.selected_message = app.messages.len().saturating_sub(1)
@@ -448,7 +726,11 @@ async fn run_app(
                             KeyCode::Enter => {
                                 if app.active_panel == Panel::Chats {
                                     app.active_panel = Panel::Messages;
-                                    app.load_messages().await?;
+                                    if app.left_panel_view == LeftPanelView::Chats {
+                                        app.load_messages().await?;
+                                    } else {
+                                        app.load_channel_messages().await?;
+                                    }
                                 }
                             }
                             KeyCode::Char('i') => {
@@ -461,6 +743,8 @@ async fn run_app(
                                 app.load_data().await?;
                                 if app.current_chat_id.is_some() {
                                     app.load_messages().await?;
+                                } else if app.current_channel_id.is_some() {
+                                    app.load_channel_messages().await?;
                                 }
                             }
                             KeyCode::Char(':') => {
