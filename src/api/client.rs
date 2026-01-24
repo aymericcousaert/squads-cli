@@ -359,18 +359,21 @@ impl TeamsClient {
         }
     }
 
-    /// Send a message to a team channel
+    /// Send a message to a team channel (uses Teams internal API)
     pub async fn send_channel_message(
         &self,
-        team_id: &str,
+        _team_id: &str,
         channel_id: &str,
         content: &str,
         subject: Option<&str>,
     ) -> Result<serde_json::Value> {
-        let token = self.get_token(SCOPE_GRAPH).await?;
+        let token = self.get_token(SCOPE_IC3).await?;
+        let me = self.get_me().await?;
+
+        // Use the channel ID as the conversation ID for the Teams internal API
         let url = format!(
-            "https://graph.microsoft.com/v1.0/teams/{}/channels/{}/messages",
-            team_id, channel_id
+            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages",
+            channel_id
         );
 
         let mut headers = HeaderMap::new();
@@ -378,33 +381,57 @@ impl TeamsClient {
             HeaderName::from_static("authorization"),
             HeaderValue::from_str(&format!("Bearer {}", token.value))?,
         );
-        headers.insert(
-            HeaderName::from_static("content-type"),
-            HeaderValue::from_static("application/json"),
-        );
 
-        let mut body = serde_json::json!({
-            "body": {
-                "contentType": "html",
-                "content": content
-            }
+        // Generate random message ID
+        let message_id: u64 = rand::random();
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
+
+        let body = serde_json::json!({
+            "id": "-1",
+            "type": "Message",
+            "conversationid": channel_id,
+            "conversation_link": format!("blah/{}", channel_id),
+            "from": format!("8:orgid:{}", me.id),
+            "composetime": now,
+            "originalarrivaltime": now,
+            "content": content,
+            "messagetype": "RichText/Html",
+            "contenttype": "Text",
+            "imdisplayname": me.display_name,
+            "clientmessageid": message_id.to_string(),
+            "call_id": "",
+            "state": 0,
+            "version": "0",
+            "amsreferences": [],
+            "properties": {
+                "importance": "",
+                "subject": subject,
+                "title": "",
+                "cards": "[]",
+                "links": "[]",
+                "mentions": "[]",
+                "onbehalfof": null,
+                "files": "[]",
+                "policy_violation": null,
+                "format_variant": "TEAMS"
+            },
+            "post_type": "Standard",
+            "cross_post_channels": []
         });
-
-        if let Some(subj) = subject {
-            body["subject"] = serde_json::json!(subj);
-        }
 
         let res = self
             .http
             .post(&url)
             .headers(headers)
-            .body(serde_json::to_string(&body)?)
+            .body(body.to_string())
             .send()
             .await?;
 
         if res.status().is_success() || res.status().as_u16() == 201 {
             let body = res.text().await?;
-            serde_json::from_str(&body).context("Failed to parse channel message response")
+            Ok(serde_json::json!({"status": "sent", "response": body}))
         } else {
             let status = res.status();
             let body = res.text().await?;
@@ -416,18 +443,21 @@ impl TeamsClient {
         }
     }
 
-    /// Reply to a message in a team channel
+    /// Reply to a message in a team channel (uses Teams internal API)
     pub async fn reply_channel_message(
         &self,
-        team_id: &str,
+        _team_id: &str,
         channel_id: &str,
-        message_id: &str,
+        parent_message_id: &str,
         content: &str,
     ) -> Result<serde_json::Value> {
-        let token = self.get_token(SCOPE_GRAPH).await?;
+        let token = self.get_token(SCOPE_IC3).await?;
+        let me = self.get_me().await?;
+
+        // For replies, we need to post to the thread (parent message)
         let url = format!(
-            "https://graph.microsoft.com/v1.0/teams/{}/channels/{}/messages/{}/replies",
-            team_id, channel_id, message_id
+            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{};messageid={}/messages",
+            channel_id, parent_message_id
         );
 
         let mut headers = HeaderMap::new();
@@ -435,29 +465,57 @@ impl TeamsClient {
             HeaderName::from_static("authorization"),
             HeaderValue::from_str(&format!("Bearer {}", token.value))?,
         );
-        headers.insert(
-            HeaderName::from_static("content-type"),
-            HeaderValue::from_static("application/json"),
-        );
+
+        // Generate random message ID
+        let message_id: u64 = rand::random();
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
 
         let body = serde_json::json!({
-            "body": {
-                "contentType": "html",
-                "content": content
-            }
+            "id": "-1",
+            "type": "Message",
+            "conversationid": channel_id,
+            "conversation_link": format!("blah/{}", channel_id),
+            "from": format!("8:orgid:{}", me.id),
+            "composetime": now,
+            "originalarrivaltime": now,
+            "content": content,
+            "messagetype": "RichText/Html",
+            "contenttype": "Text",
+            "imdisplayname": me.display_name,
+            "clientmessageid": message_id.to_string(),
+            "call_id": "",
+            "state": 0,
+            "version": "0",
+            "amsreferences": [],
+            "properties": {
+                "importance": "",
+                "subject": null,
+                "title": "",
+                "cards": "[]",
+                "links": "[]",
+                "mentions": "[]",
+                "onbehalfof": null,
+                "files": "[]",
+                "policy_violation": null,
+                "format_variant": "TEAMS"
+            },
+            "post_type": "Standard",
+            "cross_post_channels": []
         });
 
         let res = self
             .http
             .post(&url)
             .headers(headers)
-            .body(serde_json::to_string(&body)?)
+            .body(body.to_string())
             .send()
             .await?;
 
         if res.status().is_success() || res.status().as_u16() == 201 {
             let body = res.text().await?;
-            serde_json::from_str(&body).context("Failed to parse channel reply response")
+            Ok(serde_json::json!({"status": "sent", "response": body}))
         } else {
             let status = res.status();
             let body = res.text().await?;
