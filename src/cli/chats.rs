@@ -9,6 +9,7 @@ use crate::api::TeamsClient;
 use crate::config::Config;
 
 use super::output::{print_error, print_output, print_single, print_success};
+use super::utils::{html_escape, markdown_to_html, strip_html, truncate};
 use super::OutputFormat;
 
 #[derive(Args, Debug)]
@@ -446,23 +447,8 @@ async fn send(
     let html_body = if html {
         content
     } else if markdown {
-        // Use markdown crate for proper MD -> HTML conversion
-        markdown::to_html_with_options(
-            &content,
-            &markdown::Options {
-                parse: markdown::ParseOptions {
-                    constructs: markdown::Constructs {
-                        gfm_table: true,
-                        ..markdown::Constructs::gfm()
-                    },
-                    ..markdown::ParseOptions::gfm()
-                },
-                ..markdown::Options::gfm()
-            },
-        )
-        .unwrap_or_else(|_| content.clone())
+        markdown_to_html(&content)
     } else {
-        // Convert plain text to simple HTML
         format!("<p>{}</p>", html_escape(&content))
     };
 
@@ -470,53 +456,6 @@ async fn send(
     print_success("Message sent successfully");
 
     Ok(())
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() > max_len {
-        let truncated: String = chars[..max_len.saturating_sub(3)].iter().collect();
-        format!("{}...", truncated)
-    } else {
-        s.to_string()
-    }
-}
-
-fn strip_html(s: &str) -> String {
-    // Simple HTML stripping - remove tags
-    let mut result = String::new();
-    let mut in_tag = false;
-
-    for c in s.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => result.push(c),
-            _ => {}
-        }
-    }
-
-    // Decode common HTML entities
-    result
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("\\!", "!")
-        .replace("\\?", "?")
-        .replace("\\.", ".")
-        .trim()
-        .to_string()
-}
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 async fn create(
@@ -560,20 +499,7 @@ async fn reply(
     let html_body = if html {
         content.to_string()
     } else if markdown {
-        markdown::to_html_with_options(
-            content,
-            &markdown::Options {
-                parse: markdown::ParseOptions {
-                    constructs: markdown::Constructs {
-                        gfm_table: true,
-                        ..markdown::Constructs::gfm()
-                    },
-                    ..markdown::ParseOptions::gfm()
-                },
-                ..markdown::Options::gfm()
-            },
-        )
-        .unwrap_or_else(|_| content.to_string())
+        markdown_to_html(content)
     } else {
         format!("<p>{}</p>", html_escape(content))
     };

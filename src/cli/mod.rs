@@ -10,6 +10,7 @@ pub mod output;
 pub mod search;
 pub mod teams;
 pub mod users;
+pub mod utils;
 pub mod watch;
 
 use clap::{Parser, Subcommand, ValueEnum};

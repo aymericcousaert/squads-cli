@@ -9,6 +9,7 @@ use crate::api::TeamsClient;
 use crate::config::Config;
 
 use super::output::{print_error, print_output, print_single, print_success};
+use super::utils::{strip_html, truncate};
 use super::OutputFormat;
 
 #[derive(Args, Debug)]
@@ -448,43 +449,6 @@ async fn search(config: &Config, query: &str, limit: usize, format: OutputFormat
 
     print_output(&rows, format);
     Ok(())
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() > max_len {
-        let truncated: String = chars[..max_len.saturating_sub(3)].iter().collect();
-        format!("{}...", truncated)
-    } else {
-        s.to_string()
-    }
-}
-
-fn strip_html(s: &str) -> String {
-    let mut result = String::new();
-    let mut in_tag = false;
-
-    for c in s.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => result.push(c),
-            _ => {}
-        }
-    }
-
-    result
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("\\!", "!")
-        .replace("\\?", "?")
-        .replace("\\.", ".")
-        .trim()
-        .to_string()
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -10,6 +10,7 @@ use crate::types::{
 };
 
 use super::output::{print_output, print_single, print_success};
+use super::utils::truncate;
 use super::OutputFormat;
 
 use chrono::{DateTime, Local};
@@ -654,16 +655,6 @@ async fn calendars(config: &Config, format: OutputFormat) -> Result<()> {
 
     print_output(&rows, format);
     Ok(())
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() > max_len {
-        let truncated: String = chars[..max_len.saturating_sub(3)].iter().collect();
-        format!("{}...", truncated)
-    } else {
-        s.to_string()
-    }
 }
 
 /// Convert UTC ISO string from Graph API to local time format

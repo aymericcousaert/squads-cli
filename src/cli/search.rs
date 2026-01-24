@@ -7,6 +7,7 @@ use crate::api::TeamsClient;
 use crate::config::Config;
 
 use super::output::{print_output, print_single};
+use super::utils::truncate;
 use super::OutputFormat;
 
 #[derive(Args, Debug)]
@@ -75,14 +76,4 @@ pub async fn execute(cmd: SearchCommand, config: &Config, format: OutputFormat) 
     }
 
     Ok(())
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() > max_len {
-        let truncated: String = chars[..max_len.saturating_sub(3)].iter().collect();
-        format!("{}...", truncated)
-    } else {
-        s.to_string()
-    }
 }

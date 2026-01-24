@@ -8,6 +8,7 @@ use crate::api::TeamsClient;
 use crate::config::Config;
 
 use super::output::{print_output, print_single};
+use super::utils::{strip_html, truncate};
 use super::OutputFormat;
 
 #[derive(Args, Debug)]
@@ -235,49 +236,6 @@ pub async fn execute(cmd: FeedCommand, config: &Config, format: OutputFormat) ->
     }
 
     Ok(())
-}
-
-fn strip_html(s: &str) -> String {
-    let mut result = String::new();
-    let mut in_tag = false;
-
-    for c in s.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            '\n' | '\r' => {
-                if !in_tag {
-                    result.push(' ');
-                }
-            }
-            _ if !in_tag => result.push(c),
-            _ => {}
-        }
-    }
-
-    result
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("\\!", "!")
-        .replace("\\?", "?")
-        .replace("\\.", ".")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() > max_len {
-        let truncated: String = chars[..max_len.saturating_sub(3)].iter().collect();
-        format!("{}...", truncated)
-    } else {
-        s.to_string()
-    }
 }
 
 fn parse_timestamp(time_str: &str) -> i64 {

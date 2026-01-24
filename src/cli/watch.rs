@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::api::TeamsClient;
+use crate::cli::utils::{strip_html, truncate};
 use crate::config::Config;
 
 #[derive(Args, Debug)]
@@ -259,48 +260,5 @@ fn send_notification(title: &str, body: &str, _category: &str) {
             .body(body)
             .appname("squads-cli")
             .show();
-    }
-}
-
-fn strip_html(s: &str) -> String {
-    let mut result = String::new();
-    let mut in_tag = false;
-
-    for c in s.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            '\n' | '\r' => {
-                if !in_tag {
-                    result.push(' ');
-                }
-            }
-            _ if !in_tag => result.push(c),
-            _ => {}
-        }
-    }
-
-    result
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("\\!", "!")
-        .replace("\\?", "?")
-        .replace("\\.", ".")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn truncate(s: &str, max_len: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() > max_len {
-        let truncated: String = chars[..max_len.saturating_sub(3)].iter().collect();
-        format!("{}...", truncated)
-    } else {
-        s.to_string()
     }
 }
