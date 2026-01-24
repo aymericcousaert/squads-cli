@@ -741,7 +741,8 @@ async fn run_app(
                                 app.mode = Mode::Insert;
                                 app.active_panel = Panel::Input;
                                 app.status_message =
-                                    "-- INSERT -- (Esc to cancel, Enter to send)".to_string();
+                                    "-- INSERT -- (Esc: cancel, Enter: send, Opt+Enter or Ctrl+O: newline)"
+                                        .to_string();
                             }
                             KeyCode::Char('r') => {
                                 app.load_data().await?;
@@ -765,9 +766,28 @@ async fn run_app(
                                 app.mode = Mode::Normal;
                                 app.status_message = "Press ? for help".to_string();
                             }
+                            // Multiple ways to insert newline:
+                            // 1. Ctrl+J (traditional Unix)
+                            // 2. Ctrl+O (traditional "open line")
+                            // 3. Alt+Enter / Option+Enter (macOS friendly)
+                            KeyCode::Char('j')
+                                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                app.insert_newline();
+                            }
+                            KeyCode::Char('o')
+                                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                app.insert_newline();
+                            }
                             KeyCode::Enter => {
-                                if key.modifiers.contains(KeyModifiers::SHIFT) {
-                                    // Shift+Enter: insert newline
+                                // Alt+Enter (Option+Enter on macOS): insert newline
+                                // Shift+Enter or Ctrl+Enter: also insert newline
+                                // Note: Many terminals don't pass Shift+Enter correctly
+                                if key.modifiers.contains(KeyModifiers::ALT)
+                                    || key.modifiers.contains(KeyModifiers::SHIFT)
+                                    || key.modifiers.contains(KeyModifiers::CONTROL)
+                                {
                                     app.insert_newline();
                                 } else {
                                     // Enter: send message

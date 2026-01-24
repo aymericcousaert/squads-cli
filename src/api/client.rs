@@ -562,32 +562,26 @@ impl TeamsClient {
         }
     }
 
-    /// Reply to a message in a team channel
-    /// First tries Graph API (requires ChannelMessage.Send permission),
-    /// then falls back to posting with quoted content
+    /// Reply to a message in a team channel using Teams internal API
     pub async fn reply_channel_message(
         &self,
-        team_id: &str,
+        _team_id: &str,
         channel_id: &str,
         parent_message_id: &str,
         content: &str,
     ) -> Result<serde_json::Value> {
-        // Graph API needs the team's group_id (GUID), not the thread ID format
-        let details = self.get_user_details().await?;
-        let team = details
-            .teams
-            .iter()
-            .find(|t| t.id == team_id)
-            .ok_or_else(|| anyhow!("Team not found: {}", team_id))?;
-        let group_id = &team.team_site_information.group_id;
+        let token = self.get_token(SCOPE_IC3).await?;
+        let me = self.get_me().await?;
 
-        let token = self.get_token(SCOPE_GRAPH).await?;
+        // Process mentions in content
+        let (processed_content, mentions_json) = self.process_mentions(content).await?;
 
-        // Try Graph API for proper thread replies
-        // Format: POST /teams/{group-id}/channels/{channel-id}/messages/{message-id}/replies
+        // For channel thread replies, post to the thread conversation
+        // The thread ID format is: {channel_id};messageid={parent_message_id}
+        let thread_id = format!("{};messageid={}", channel_id, parent_message_id);
         let url = format!(
-            "https://graph.microsoft.com/v1.0/teams/{}/channels/{}/messages/{}/replies",
-            group_id, channel_id, parent_message_id
+            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages",
+            thread_id
         );
 
         let mut headers = HeaderMap::new();
@@ -595,79 +589,66 @@ impl TeamsClient {
             HeaderName::from_static("authorization"),
             HeaderValue::from_str(&format!("Bearer {}", token.value))?,
         );
-        headers.insert(
-            HeaderName::from_static("content-type"),
-            HeaderValue::from_static("application/json"),
-        );
+
+        // Generate random message ID
+        let message_id: u64 = rand::random();
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
 
         let body = serde_json::json!({
-            "body": {
-                "contentType": "html",
-                "content": content
-            }
+            "id": "-1",
+            "type": "Message",
+            "conversationid": thread_id,
+            "conversation_link": format!("blah/{}", thread_id),
+            "from": format!("8:orgid:{}", me.id),
+            "composetime": now,
+            "originalarrivaltime": now,
+            "content": processed_content,
+            "messagetype": "RichText/Html",
+            "contenttype": "Html",
+            "imdisplayname": me.display_name,
+            "clientmessageid": message_id.to_string(),
+            "call_id": "",
+            "state": 0,
+            "version": "0",
+            "amsreferences": [],
+            "properties": {
+                "importance": "",
+                "subject": null,
+                "title": "",
+                "cards": "[]",
+                "links": "[]",
+                "mentions": mentions_json,
+                "onbehalfof": null,
+                "files": "[]",
+                "policy_violation": null,
+                "format_variant": "TEAMS"
+            },
+            "post_type": "Standard",
+            "cross_post_channels": []
         });
 
         let res = self
             .http
             .post(&url)
             .headers(headers)
-            .body(serde_json::to_string(&body)?)
+            .body(body.to_string())
             .send()
             .await?;
 
         if res.status().is_success() || res.status().as_u16() == 201 {
             let body = res.text().await?;
-            return serde_json::from_str(&body)
-                .or_else(|_| Ok(serde_json::json!({"status": "sent"})));
+            Ok(serde_json::json!({"status": "sent", "response": body}))
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!(
+                "Failed to reply to channel message: {} - {}",
+                status,
+                body
+            ))
         }
-
-        // If Graph API fails (likely missing ChannelMessage.Send permission),
-        // fall back to posting a new message with quoted content
-        if res.status().as_u16() == 403 {
-            // Get channel messages to find the original message
-            let conversations = self.get_team_conversations(team_id, channel_id).await?;
-            let original_msg = conversations
-                .reply_chains
-                .iter()
-                .flat_map(|chain| &chain.messages)
-                .find(|m| m.id.as_deref() == Some(parent_message_id));
-
-            let quoted_content = if let Some(msg) = original_msg {
-                let sender = msg
-                    .im_display_name
-                    .clone()
-                    .unwrap_or_else(|| "Someone".to_string());
-                let original_content = msg
-                    .content
-                    .clone()
-                    .map(|c| strip_html_simple(&c))
-                    .unwrap_or_default();
-                let truncated = if original_content.len() > 100 {
-                    format!("{}...", &original_content[..100])
-                } else {
-                    original_content
-                };
-                format!(
-                    "<blockquote><b>{}</b>: {}</blockquote>{}",
-                    sender, truncated, content
-                )
-            } else {
-                content.to_string()
-            };
-
-            // Post as new message with quoted content
-            return self
-                .send_channel_message(team_id, channel_id, &quoted_content, None)
-                .await;
-        }
-
-        let status = res.status();
-        let body = res.text().await?;
-        Err(anyhow!(
-            "Failed to reply to channel message: {} - {}",
-            status,
-            body
-        ))
     }
 
     /// Send a message to a conversation
