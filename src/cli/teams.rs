@@ -80,7 +80,7 @@ pub enum TeamsSubcommand {
         channel_id: String,
 
         /// Message ID to reply to
-        #[arg(short, long)]
+        #[arg(long)]
         message_id: String,
 
         /// Reply content
