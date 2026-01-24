@@ -131,8 +131,16 @@ impl App {
                         .messages
                         .into_iter()
                         .filter(|m| {
-                            m.message_type.as_deref() == Some("RichText/Html")
-                                || m.message_type.as_deref() == Some("Text")
+                            // Filter by message type
+                            let is_content_msg = m.message_type.as_deref() == Some("RichText/Html")
+                                || m.message_type.as_deref() == Some("Text");
+                            // Filter out deleted messages (deletetime > 0)
+                            let is_deleted = m
+                                .properties
+                                .as_ref()
+                                .map(|p| p.deletetime > 0)
+                                .unwrap_or(false);
+                            is_content_msg && !is_deleted
                         })
                         .take(50)
                         .collect();
