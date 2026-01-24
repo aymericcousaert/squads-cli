@@ -23,6 +23,10 @@ pub struct FeedCommand {
     /// Only show unread items
     #[arg(short, long)]
     pub unread: bool,
+
+    /// Only show items where you are @mentioned
+    #[arg(long)]
+    pub mentions_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
@@ -65,6 +69,17 @@ struct FeedItemJson {
 pub async fn execute(cmd: FeedCommand, config: &Config, format: OutputFormat) -> Result<()> {
     let client = TeamsClient::new(config)?;
 
+    // Get current user info for mentions filtering
+    let (my_id, my_name) = if cmd.mentions_only {
+        let me = client.get_me().await?;
+        (
+            me.id.clone(),
+            me.display_name.clone().unwrap_or_default().to_lowercase(),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+
     let mut items: Vec<FeedItemJson> = Vec::new();
 
     // Collect chat messages
@@ -87,17 +102,28 @@ pub async fn execute(cmd: FeedCommand, config: &Config, format: OutputFormat) ->
                             continue;
                         }
 
+                        let raw_content = msg.content.clone().unwrap_or_default();
+
+                        // Filter for mentions if requested
+                        if cmd.mentions_only {
+                            let is_mentioned = raw_content.contains(&format!("8:orgid:{}", my_id))
+                                || raw_content.contains(&format!("id=\"8:orgid:{}\"", my_id))
+                                || raw_content
+                                    .to_lowercase()
+                                    .contains(&format!("@{}", my_name));
+
+                            if !is_mentioned {
+                                continue;
+                            }
+                        }
+
                         let sender = msg
                             .im_display_name
                             .clone()
                             .or(msg.from.clone())
                             .unwrap_or_else(|| "Unknown".to_string());
 
-                        let content = msg
-                            .content
-                            .clone()
-                            .map(|c| strip_html(&c))
-                            .unwrap_or_default();
+                        let content = strip_html(&raw_content);
 
                         let time_str = msg.original_arrival_time.clone().unwrap_or_default();
                         let timestamp = parse_timestamp(&time_str);

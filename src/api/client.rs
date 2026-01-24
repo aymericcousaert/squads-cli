@@ -253,6 +253,38 @@ impl TeamsClient {
         }
     }
 
+    /// Search users by display name or email (uses advanced query capabilities)
+    pub async fn search_users(&self, query: &str, limit: usize) -> Result<Users> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        // Use $search with displayName for partial matching
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/users?$search=\"displayName:{}\" OR \"mail:{}\"&$top={}&$orderby=displayName",
+            query, query, limit
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        // Required for $search queries
+        headers.insert(
+            HeaderName::from_static("consistencylevel"),
+            HeaderValue::from_static("eventual"),
+        );
+
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse user search results")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to search users: {} - {}", status, body))
+        }
+    }
+
     /// Get conversations/messages from a chat
     pub async fn get_conversations(
         &self,
@@ -321,6 +353,116 @@ impl TeamsClient {
             let body = res.text().await?;
             Err(anyhow!(
                 "Failed to get team conversations: {} - {}",
+                status,
+                body
+            ))
+        }
+    }
+
+    /// Send a message to a team channel
+    pub async fn send_channel_message(
+        &self,
+        team_id: &str,
+        channel_id: &str,
+        content: &str,
+        subject: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/teams/{}/channels/{}/messages",
+            team_id, channel_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let mut body = serde_json::json!({
+            "body": {
+                "contentType": "html",
+                "content": content
+            }
+        });
+
+        if let Some(subj) = subject {
+            body["subject"] = serde_json::json!(subj);
+        }
+
+        let res = self
+            .http
+            .post(&url)
+            .headers(headers)
+            .body(serde_json::to_string(&body)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() || res.status().as_u16() == 201 {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse channel message response")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!(
+                "Failed to send channel message: {} - {}",
+                status,
+                body
+            ))
+        }
+    }
+
+    /// Reply to a message in a team channel
+    pub async fn reply_channel_message(
+        &self,
+        team_id: &str,
+        channel_id: &str,
+        message_id: &str,
+        content: &str,
+    ) -> Result<serde_json::Value> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/teams/{}/channels/{}/messages/{}/replies",
+            team_id, channel_id, message_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let body = serde_json::json!({
+            "body": {
+                "contentType": "html",
+                "content": content
+            }
+        });
+
+        let res = self
+            .http
+            .post(&url)
+            .headers(headers)
+            .body(serde_json::to_string(&body)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() || res.status().as_u16() == 201 {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse channel reply response")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!(
+                "Failed to reply to channel message: {} - {}",
                 status,
                 body
             ))
@@ -650,6 +792,66 @@ impl TeamsClient {
     /// Get activity feed
     pub async fn get_activities(&self) -> Result<Conversations> {
         self.get_conversations("48:notifications", None).await
+    }
+
+    /// Get current user's presence
+    pub async fn get_my_presence(&self) -> Result<GraphPresence> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = "https://graph.microsoft.com/v1.0/me/presence";
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse presence")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to get presence: {} - {}", status, body))
+        }
+    }
+
+    /// Get presence for multiple users by their IDs
+    pub async fn get_presence(&self, user_ids: Vec<&str>) -> Result<GraphPresences> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = "https://graph.microsoft.com/v1.0/communications/getPresencesByUserId";
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let body = serde_json::json!({
+            "ids": user_ids
+        });
+
+        let res = self
+            .http
+            .post(url)
+            .headers(headers)
+            .body(serde_json::to_string(&body)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse presences")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to get presences: {} - {}", status, body))
+        }
     }
 
     // ==================== OUTLOOK MAIL ====================
@@ -1613,6 +1815,63 @@ impl TeamsClient {
             let status = res.status();
             let body = res.text().await?;
             Err(anyhow!("Failed to delete event: {} - {}", status, body))
+        }
+    }
+
+    /// Download an image from Teams AMS (Azure Media Services) URL
+    pub async fn download_ams_image(&self, image_url: &str) -> Result<(String, Vec<u8>)> {
+        // AMS images require the chatsvcagg or IC3 token
+        let token = self.get_token(SCOPE_CHATSVCAGG).await?;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(image_url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let content_type = res
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            let bytes = res.bytes().await?.to_vec();
+            Ok((content_type, bytes))
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to download image: {} - {}", status, body))
+        }
+    }
+
+    /// Download a file from SharePoint/OneDrive using its share URL
+    pub async fn download_sharepoint_file(&self, file_url: &str) -> Result<(String, Vec<u8>)> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.get(file_url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let content_type = res
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            let bytes = res.bytes().await?.to_vec();
+            Ok((content_type, bytes))
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to download file: {} - {}", status, body))
         }
     }
 }

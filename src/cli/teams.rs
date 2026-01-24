@@ -1,3 +1,5 @@
+use std::io::{self, Read};
+
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use serde::Serialize;
@@ -6,7 +8,7 @@ use tabled::Tabled;
 use crate::api::TeamsClient;
 use crate::config::Config;
 
-use super::output::{print_error, print_output, print_single};
+use super::output::{print_error, print_output, print_single, print_success};
 use super::OutputFormat;
 
 #[derive(Args, Debug)]
@@ -43,6 +45,50 @@ pub enum TeamsSubcommand {
         /// Maximum number of messages to retrieve
         #[arg(short, long, default_value = "50")]
         limit: usize,
+    },
+
+    /// Post a message to a team channel
+    Post {
+        /// Team ID
+        team_id: String,
+
+        /// Channel ID
+        channel_id: String,
+
+        /// Message content
+        message: Option<String>,
+
+        /// Message subject (optional)
+        #[arg(short, long)]
+        subject: Option<String>,
+
+        /// Read message from stdin
+        #[arg(long)]
+        stdin: bool,
+
+        /// Treat message as Markdown and convert to HTML
+        #[arg(short, long)]
+        markdown: bool,
+    },
+
+    /// Reply to a message in a team channel
+    Reply {
+        /// Team ID
+        team_id: String,
+
+        /// Channel ID
+        channel_id: String,
+
+        /// Message ID to reply to
+        #[arg(short, long)]
+        message_id: String,
+
+        /// Reply content
+        content: String,
+
+        /// Treat content as Markdown and convert to HTML
+        #[arg(short, long)]
+        markdown: bool,
     },
 }
 
@@ -88,6 +134,42 @@ pub async fn execute(cmd: TeamsCommand, config: &Config, format: OutputFormat) -
             channel_id,
             limit,
         } => messages(config, &team_id, &channel_id, limit, format).await,
+        TeamsSubcommand::Post {
+            team_id,
+            channel_id,
+            message,
+            subject,
+            stdin,
+            markdown,
+        } => {
+            post(
+                config,
+                &team_id,
+                &channel_id,
+                message,
+                subject,
+                stdin,
+                markdown,
+            )
+            .await
+        }
+        TeamsSubcommand::Reply {
+            team_id,
+            channel_id,
+            message_id,
+            content,
+            markdown,
+        } => {
+            reply(
+                config,
+                &team_id,
+                &channel_id,
+                &message_id,
+                &content,
+                markdown,
+            )
+            .await
+        }
     }
 }
 
@@ -225,4 +307,92 @@ fn strip_html(s: &str) -> String {
         .replace("&#39;", "'")
         .trim()
         .to_string()
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+async fn post(
+    config: &Config,
+    team_id: &str,
+    channel_id: &str,
+    message: Option<String>,
+    subject: Option<String>,
+    stdin: bool,
+    markdown: bool,
+) -> Result<()> {
+    let content = if let Some(msg) = message {
+        msg
+    } else if stdin {
+        let mut buffer = String::new();
+        io::stdin().read_to_string(&mut buffer)?;
+        buffer.trim().to_string()
+    } else {
+        print_error("No message provided. Use --stdin or provide message as argument.");
+        return Ok(());
+    };
+
+    if content.is_empty() {
+        print_error("Message cannot be empty");
+        return Ok(());
+    }
+
+    let client = TeamsClient::new(config)?;
+
+    let html_body = if markdown {
+        markdown::to_html(&content)
+    } else {
+        format!("<p>{}</p>", html_escape(&content))
+    };
+
+    let result = client
+        .send_channel_message(team_id, channel_id, &html_body, subject.as_deref())
+        .await?;
+
+    if let Some(id) = result.get("id").and_then(|v| v.as_str()) {
+        print_success(&format!("Message posted (ID: {})", id));
+    } else {
+        print_success("Message posted to channel");
+    }
+
+    Ok(())
+}
+
+async fn reply(
+    config: &Config,
+    team_id: &str,
+    channel_id: &str,
+    message_id: &str,
+    content: &str,
+    markdown: bool,
+) -> Result<()> {
+    if content.is_empty() {
+        print_error("Reply content cannot be empty");
+        return Ok(());
+    }
+
+    let client = TeamsClient::new(config)?;
+
+    let html_body = if markdown {
+        markdown::to_html(content)
+    } else {
+        format!("<p>{}</p>", html_escape(content))
+    };
+
+    let result = client
+        .reply_channel_message(team_id, channel_id, message_id, &html_body)
+        .await?;
+
+    if let Some(id) = result.get("id").and_then(|v| v.as_str()) {
+        print_success(&format!("Reply posted (ID: {})", id));
+    } else {
+        print_success("Reply posted");
+    }
+
+    Ok(())
 }

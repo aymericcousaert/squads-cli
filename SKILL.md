@@ -23,6 +23,11 @@ Search across both Mail and Calendar simultaneously.
   - Support for `--markdown` and `--stdin`.
 - **Reply**: `squads-cli chats reply <chat-id> --message-id <msg-id> "<content>"`
 - **React**: `squads-cli chats react <chat-id> --message-id <msg-id> <reaction>` (e.g., like, heart, laugh, surprised, sad, angry)
+- **View Mentions**: `squads-cli chats mentions` (find messages where you are @mentioned)
+- **List Files**: `squads-cli chats files <chat-id>` (list files shared in a chat)
+- **Download File**: `squads-cli chats download-file <chat-id> <file-id> --output ./file.pdf`
+- **List Images**: `squads-cli chats images <chat-id>` (list images in chat messages)
+- **Download Image**: `squads-cli chats download-image <url> --output ./image.png`
 
 ### 3. Outlook Mail
 - **List/Search**: `squads-cli mail list` or `squads-cli mail search "<query>"`
@@ -36,12 +41,35 @@ Search across both Mail and Calendar simultaneously.
   - *Note*: Times are automatically localized to the system timezone.
 - **Calendars**: `squads-cli calendar calendars` (lists all accessible calendars)
 
+### 5. User Operations
+- **Search Users**: `squads-cli users search "<name or email>"` (find users by name or email)
+- **Check Presence**: `squads-cli users presence` (your own presence)
+- **Check User Presence**: `squads-cli users presence --user "<email>"` (specific user)
+- **Check Multiple Users**: `squads-cli users presence --users "email1,email2"` (multiple users)
+
+### 6. Teams Channels
+- **List Teams**: `squads-cli teams list`
+- **List Channels**: `squads-cli teams channels <team-id>`
+- **View Messages**: `squads-cli teams messages <team-id> <channel-id>`
+- **Post to Channel**: `squads-cli teams post <team-id> <channel-id> "<message>"`
+  - Support for `--subject`, `--markdown`, and `--stdin`.
+- **Reply in Channel**: `squads-cli teams reply <team-id> <channel-id> --message-id <id> "<reply>"`
+
+### 7. Unified Feed
+- **View All Activity**: `squads-cli feed` (combined view of chats and emails)
+- **Filter by Mentions**: `squads-cli feed --mentions-only` (only items where you are @mentioned)
+- **Filter Unread**: `squads-cli feed --unread`
+
 ## Best Practices for Agents
 
 1. **Structured Output**: Always use `--format json` when you need to parse results programmatically (e.g., extracting `chat-id` or `msg-id`).
 2. **Context Discovery**: Start by listing chats or mail to find relevant IDs before performing actions.
 3. **Availability Checks**: When scheduling, use `free-busy` first to find common slots.
 4. **Markdown**: Prefer `--markdown` for Teams messages to ensure rich formatting (bold, links, code blocks) is preserved.
+5. **Check Presence Before Reaching Out**: Use `squads-cli users presence --user "<email>"` to check if someone is Available/Busy/Away before messaging.
+6. **Find Users by Name**: Use `squads-cli users search "John"` to find user email/ID for messaging.
+7. **Monitor Mentions**: Use `squads-cli chats mentions` or `squads-cli feed --mentions-only` to find messages that need your attention.
+8. **Access Shared Content**: Use `squads-cli chats images` and `squads-cli chats files` to list and download content shared in chats.
 
 ## Installation / Setup
 If the tool is not in the path, it can be installed via:

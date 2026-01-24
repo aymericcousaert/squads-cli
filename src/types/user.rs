@@ -98,3 +98,39 @@ pub struct Presences {
     pub presence: Vec<Presence>,
     pub is_snapshot: Option<bool>,
 }
+
+/// User presence from Microsoft Graph API
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphPresence {
+    pub id: Option<String>,
+    /// Available, Away, BeRightBack, Busy, DoNotDisturb, Offline, PresenceUnknown
+    pub availability: Option<String>,
+    /// Available, Away, BeRightBack, Busy, DoNotDisturb, InACall, InAConferenceCall,
+    /// Inactive, InAMeeting, Offline, OffWork, OutOfOffice, PresenceUnknown,
+    /// Presenting, UrgentInterruptionsOnly
+    pub activity: Option<String>,
+    pub status_message: Option<PresenceStatusMessage>,
+}
+
+/// Status message in presence
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresenceStatusMessage {
+    pub message: Option<PresenceMessageContent>,
+    pub expiry_date_time: Option<String>,
+}
+
+/// Presence message content
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresenceMessageContent {
+    pub content: Option<String>,
+    pub content_type: Option<String>,
+}
+
+/// Multiple presences response from Graph API
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GraphPresences {
+    pub value: Vec<GraphPresence>,
+}
