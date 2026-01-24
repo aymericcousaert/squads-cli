@@ -421,12 +421,7 @@ async fn reply(
     Ok(())
 }
 
-async fn delete(
-    config: &Config,
-    team_id: &str,
-    channel_id: &str,
-    message_id: &str,
-) -> Result<()> {
+async fn delete(config: &Config, team_id: &str, channel_id: &str, message_id: &str) -> Result<()> {
     let client = TeamsClient::new(config)?;
     client
         .delete_channel_message(team_id, channel_id, message_id)
