@@ -41,14 +41,26 @@ fn draw_chats(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
+    // Calculate max width for chat names (area width - borders - unread marker)
+    let max_name_width = area.width.saturating_sub(5) as usize;
+
     let items: Vec<ListItem> = app
         .chats
         .iter()
         .enumerate()
         .map(|(i, chat)| {
             let title = chat.title.clone().unwrap_or_else(|| {
-                if chat.members.len() == 2 {
-                    "Direct Chat".to_string()
+                // Try to get name from last message sender (if not from me)
+                if let Some(last_msg) = &chat.last_message {
+                    if chat.is_last_message_from_me != Some(true) {
+                        if let Some(name) = &last_msg.im_display_name {
+                            return name.clone();
+                        }
+                    }
+                }
+                // Fallback to showing member count
+                if chat.is_one_on_one == Some(true) {
+                    "1:1 Chat".to_string()
                 } else {
                     format!("Group ({} members)", chat.members.len())
                 }
@@ -59,7 +71,7 @@ fn draw_chats(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 "  "
             };
-            let display = format!("{}{}", unread_marker, truncate(&title, 25));
+            let display = format!("{}{}", unread_marker, truncate(&title, max_name_width));
 
             let style = if i == app.selected_chat && is_active {
                 Style::default()
