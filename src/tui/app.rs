@@ -774,14 +774,10 @@ async fn run_app(
                             KeyCode::F(2) => {
                                 app.insert_newline();
                             }
-                            KeyCode::Char('j')
-                                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                            {
+                            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 app.insert_newline();
                             }
-                            KeyCode::Char('o')
-                                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                            {
+                            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 app.insert_newline();
                             }
                             KeyCode::Enter => {
@@ -828,14 +824,10 @@ async fn run_app(
                                 }
                             }
                             // Also support Ctrl+B/F for word navigation (emacs style)
-                            KeyCode::Char('b')
-                                if key.modifiers.contains(KeyModifiers::ALT) =>
-                            {
+                            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
                                 app.move_cursor_word_left();
                             }
-                            KeyCode::Char('f')
-                                if key.modifiers.contains(KeyModifiers::ALT) =>
-                            {
+                            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
                                 app.move_cursor_word_right();
                             }
                             KeyCode::Home => {

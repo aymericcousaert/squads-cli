@@ -390,15 +390,14 @@ impl TeamsClient {
     }
 
     /// Debug: Print thread structure to understand root vs reply messages
-    pub async fn debug_thread_structure(
-        &self,
-        team_id: &str,
-        channel_id: &str,
-    ) -> Result<()> {
+    pub async fn debug_thread_structure(&self, team_id: &str, channel_id: &str) -> Result<()> {
         let conversations = self.get_team_conversations(team_id, channel_id).await?;
 
         eprintln!("\n=== Thread Structure Debug ===");
-        eprintln!("Total threads (reply_chains): {}\n", conversations.reply_chains.len());
+        eprintln!(
+            "Total threads (reply_chains): {}\n",
+            conversations.reply_chains.len()
+        );
 
         for (i, chain) in conversations.reply_chains.iter().enumerate().take(10) {
             eprintln!("--- Thread {} ---", i);
@@ -407,7 +406,9 @@ impl TeamsClient {
             eprintln!("  Message count: {}", chain.messages.len());
 
             for (j, msg) in chain.messages.iter().take(3).enumerate() {
-                let content_preview = msg.content.as_deref()
+                let content_preview = msg
+                    .content
+                    .as_deref()
                     .unwrap_or("")
                     .chars()
                     .take(40)

@@ -206,6 +206,8 @@ struct MessageRow {
     id: String,
     #[tabled(rename = "From")]
     from: String,
+    #[tabled(rename = "Status")]
+    status: String,
     #[tabled(rename = "Time")]
     time: String,
     #[tabled(rename = "Reactions")]
@@ -433,11 +435,27 @@ async fn messages(
                     let content = msg.content.map(|c| strip_html(&c)).unwrap_or_default();
                     let reactions = format_reactions_summary(&msg.properties);
 
+                    let mut status = Vec::new();
+                    if let Some(props) = &msg.properties {
+                        if props.deletetime > 0 {
+                            status.push("DELETED");
+                        }
+                        if props.systemdelete {
+                            status.push("SYS_DEL");
+                        }
+                    }
+                    let status_str = if status.is_empty() {
+                        "ACTIVE".to_string()
+                    } else {
+                        status.join("|")
+                    };
+
                     MessageRow {
                         id: msg.id.unwrap_or_default(),
                         from: msg
                             .im_display_name
                             .unwrap_or_else(|| msg.from.unwrap_or_else(|| "Unknown".to_string())),
+                        status: status_str,
                         time: msg.original_arrival_time.unwrap_or_default(),
                         reactions,
                         content: truncate(&content, 50),

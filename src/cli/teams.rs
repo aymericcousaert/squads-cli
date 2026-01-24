@@ -165,6 +165,8 @@ struct MessageRow {
     id: String,
     #[tabled(rename = "From")]
     from: String,
+    #[tabled(rename = "Status")]
+    status: String,
     #[tabled(rename = "Subject")]
     subject: String,
     #[tabled(rename = "Time")]
@@ -345,11 +347,27 @@ async fn messages(
 
                 let reactions = format_reactions_summary(&msg.properties);
 
+                let mut status = Vec::new();
+                if let Some(props) = &msg.properties {
+                    if props.deletetime > 0 {
+                        status.push("DELETED");
+                    }
+                    if props.systemdelete {
+                        status.push("SYS_DEL");
+                    }
+                }
+                let status_str = if status.is_empty() {
+                    "ACTIVE".to_string()
+                } else {
+                    status.join("|")
+                };
+
                 rows.push(MessageRow {
                     id: msg.id.unwrap_or_default(),
                     from: msg
                         .im_display_name
                         .unwrap_or_else(|| msg.from.unwrap_or_else(|| "Unknown".to_string())),
+                    status: status_str,
                     subject: truncate(&subject, 20),
                     time: msg.original_arrival_time.unwrap_or_default(),
                     reactions,
@@ -627,5 +645,51 @@ async fn download_image(config: &Config, image_url: &str, output: Option<String>
 
 async fn debug_threads(config: &Config, team_id: &str, channel_id: &str) -> Result<()> {
     let client = TeamsClient::new(config)?;
-    client.debug_thread_structure(team_id, channel_id).await
+    let conversations = client.get_team_conversations(team_id, channel_id).await?;
+
+    println!("\n=== Thread Structure Debug ===");
+    println!(
+        "Total threads (reply_chains): {}\n",
+        conversations.reply_chains.len()
+    );
+
+    for (i, chain) in conversations.reply_chains.iter().enumerate() {
+        println!("--- Thread {} ---", i);
+        println!("  Chain ID: {}", chain.id);
+        println!("  Container ID: {}", chain.container_id);
+        println!("  Message count: {}", chain.messages.len());
+
+        for (j, msg) in chain.messages.iter().enumerate() {
+            let content_preview = msg
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .chars()
+                .take(40)
+                .collect::<String>()
+                .replace('\n', " ");
+
+            let mut status = Vec::new();
+            if let Some(props) = &msg.properties {
+                if props.deletetime > 0 {
+                    status.push(format!("DELETED({})", props.deletetime));
+                }
+                if props.systemdelete {
+                    status.push("SYSTEM_DELETE".to_string());
+                }
+            }
+            let status_str = if status.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", status.join(", "))
+            };
+
+            println!("    [{}] ID: {:?}{}", j, msg.id, status_str);
+            println!("        From: {:?}", msg.im_display_name);
+            println!("        Content: {}...", content_preview);
+        }
+        println!();
+    }
+
+    Ok(())
 }
