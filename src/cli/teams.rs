@@ -305,6 +305,9 @@ fn strip_html(s: &str) -> String {
         .replace("&amp;", "&")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
+        .replace("\\!", "!")
+        .replace("\\?", "?")
+        .replace("\\.", ".")
         .trim()
         .to_string()
 }
