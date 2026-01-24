@@ -9,12 +9,16 @@ use ratatui::{
 use super::app::{App, LeftPanelView, Mode, Panel};
 
 pub fn draw(f: &mut Frame, app: &App) {
+    // Calculate input height based on content (min 3, max 10)
+    let newline_count = app.input.matches('\n').count();
+    let input_height = (newline_count as u16 + 3).min(10).max(3);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(10),   // Main content
-            Constraint::Length(3), // Input
-            Constraint::Length(1), // Status bar
+            Constraint::Min(10),           // Main content
+            Constraint::Length(input_height), // Input (dynamic height)
+            Constraint::Length(1),         // Status bar
         ])
         .split(f.area());
 
