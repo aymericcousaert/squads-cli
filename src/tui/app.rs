@@ -741,7 +741,7 @@ async fn run_app(
                                 app.mode = Mode::Insert;
                                 app.active_panel = Panel::Input;
                                 app.status_message =
-                                    "-- INSERT -- (Esc: cancel, Enter: send, Opt+Enter or Ctrl+O: newline)"
+                                    "-- INSERT -- (Esc: cancel, Enter: send, F2: newline)"
                                         .to_string();
                             }
                             KeyCode::Char('r') => {
@@ -767,9 +767,13 @@ async fn run_app(
                                 app.status_message = "Press ? for help".to_string();
                             }
                             // Multiple ways to insert newline:
-                            // 1. Ctrl+J (traditional Unix)
-                            // 2. Ctrl+O (traditional "open line")
-                            // 3. Alt+Enter / Option+Enter (macOS friendly)
+                            // 1. F2 key (universal - works on all terminals)
+                            // 2. Ctrl+J (traditional Unix)
+                            // 3. Ctrl+O (traditional "open line")
+                            // 4. Alt+Enter / Option+Enter (macOS friendly)
+                            KeyCode::F(2) => {
+                                app.insert_newline();
+                            }
                             KeyCode::Char('j')
                                 if key.modifiers.contains(KeyModifiers::CONTROL) =>
                             {
