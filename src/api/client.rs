@@ -360,43 +360,83 @@ impl TeamsClient {
     }
 
     /// Process @mentions in content and return (processed_content, mentions_json)
-    /// Looks up user by name and replaces @Name with proper <at> tags
+    /// Looks up user by name and replaces @Name with proper Teams mention spans
     pub async fn process_mentions(&self, content: &str) -> Result<(String, String)> {
-        // Find all @mentions using regex-like parsing
         let mut mentions: Vec<serde_json::Value> = Vec::new();
+        let mut user_mention_ids: std::collections::HashMap<String, i32> =
+            std::collections::HashMap::new();
         let mut processed = content.to_string();
-        let mut mention_id = 0;
+        let mut next_mention_id = 0;
 
-        // Find @Name patterns (name is everything after @ until space or punctuation)
-        let re_pattern = regex::Regex::new(r"@([A-Za-zÀ-ÿ\-]+(?:\s+[A-Za-zÀ-ÿ\-]+)?)").ok();
+        // Find @Name patterns - capture first name + optional last name (uppercase start)
+        let re_pattern =
+            regex::Regex::new(r"@([A-Za-zÀ-ÿ][-A-Za-zÀ-ÿ]*)(?:\s+([A-ZÀ-Ý][-A-Za-zÀ-ÿ]*))?")
+                .ok();
+
+        // Common words to exclude from being treated as last names
+        let common_words: std::collections::HashSet<&str> = [
+            "And", "Or", "The", "Is", "Was", "Are", "Were", "Has", "Have", "Had",
+            "For", "With", "From", "This", "That", "Here", "There", "When", "Where",
+            "Et", "Ou", "Le", "La", "Les", "Est", "Sont", "Avec", "Pour", "Dans",
+        ]
+        .iter()
+        .cloned()
+        .collect();
 
         if let Some(re) = re_pattern {
-            for cap in re.captures_iter(content) {
-                let full_match = cap.get(0).unwrap().as_str();
-                let name = cap.get(1).unwrap().as_str();
+            let matches: Vec<_> = re
+                .captures_iter(content)
+                .map(|cap| {
+                    let full_match = cap.get(0).unwrap().as_str().to_string();
+                    let first_name = cap.get(1).unwrap().as_str().to_string();
+                    let last_name = cap.get(2).map(|m| m.as_str().to_string());
+                    let last_name = last_name.filter(|ln| !common_words.contains(ln.as_str()));
+                    let full_match = if last_name.is_none() && cap.get(2).is_some() {
+                        format!("@{}", first_name)
+                    } else {
+                        full_match
+                    };
+                    (full_match, first_name, last_name)
+                })
+                .collect();
 
-                // Search for the user
-                if let Ok(users) = self.search_users(name, 1).await {
+            for (full_match, first_name, last_name) in matches {
+                let (search_name, display_text) = if let Some(ref last) = last_name {
+                    let full_name = format!("{} {}", first_name, last);
+                    match self.search_users(&full_name, 1).await {
+                        Ok(users) if !users.value.is_empty() => (full_name.clone(), full_name),
+                        _ => (first_name.clone(), format!("{} {}", first_name, last)),
+                    }
+                } else {
+                    (first_name.clone(), first_name.clone())
+                };
+
+                if let Ok(users) = self.search_users(&search_name, 1).await {
                     if let Some(user) = users.value.first() {
                         let user_id = user.id.clone();
-                        let display_name = user
-                            .display_name
-                            .clone()
-                            .unwrap_or_else(|| name.to_string());
 
-                        // Create mention object
-                        let mention = serde_json::json!({
-                            "id": mention_id,
-                            "mri": format!("8:orgid:{}", user_id),
-                            "displayName": display_name
-                        });
-                        mentions.push(mention);
+                        // Reuse same mention ID for same user (Teams limitation)
+                        let mention_id = if let Some(&id) = user_mention_ids.get(&user_id) {
+                            id
+                        } else {
+                            let id = next_mention_id;
+                            next_mention_id += 1;
+                            user_mention_ids.insert(user_id.clone(), id);
+                            // Only add to mentions array once per user
+                            let mention = serde_json::json!({
+                                "id": id,
+                                "mri": format!("8:orgid:{}", user_id),
+                                "displayName": display_text
+                            });
+                            mentions.push(mention);
+                            id
+                        };
 
-                        // Replace @Name with <at> tag
-                        let at_tag = format!("<at id=\"{}\">{}</at>", mention_id, display_name);
-                        processed = processed.replacen(full_match, &at_tag, 1);
-
-                        mention_id += 1;
+                        let mention_span = format!(
+                            "<span itemtype=\"http://schema.skype.com/Mention\" itemscope=\"\" itemid=\"{}\">{}</span>",
+                            mention_id, display_text
+                        );
+                        processed = processed.replacen(&full_match, &mention_span, 1);
                     }
                 }
             }
