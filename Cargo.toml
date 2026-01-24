@@ -60,6 +60,9 @@ notify-rust = "4"
 open = "5"
 arboard = "3"
 
+# Regex for mention parsing
+regex = "1"
+
 [features]
 default = []
 tui = ["ratatui", "crossterm"]

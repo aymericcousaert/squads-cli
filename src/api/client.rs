@@ -359,6 +359,53 @@ impl TeamsClient {
         }
     }
 
+    /// Process @mentions in content and return (processed_content, mentions_json)
+    /// Looks up user by name and replaces @Name with proper <at> tags
+    pub async fn process_mentions(&self, content: &str) -> Result<(String, String)> {
+        // Find all @mentions using regex-like parsing
+        let mut mentions: Vec<serde_json::Value> = Vec::new();
+        let mut processed = content.to_string();
+        let mut mention_id = 0;
+
+        // Find @Name patterns (name is everything after @ until space or punctuation)
+        let re_pattern = regex::Regex::new(r"@([A-Za-zÀ-ÿ\-]+(?:\s+[A-Za-zÀ-ÿ\-]+)?)").ok();
+
+        if let Some(re) = re_pattern {
+            for cap in re.captures_iter(content) {
+                let full_match = cap.get(0).unwrap().as_str();
+                let name = cap.get(1).unwrap().as_str();
+
+                // Search for the user
+                if let Ok(users) = self.search_users(name, 1).await {
+                    if let Some(user) = users.value.first() {
+                        let user_id = user.id.clone();
+                        let display_name = user
+                            .display_name
+                            .clone()
+                            .unwrap_or_else(|| name.to_string());
+
+                        // Create mention object
+                        let mention = serde_json::json!({
+                            "id": mention_id,
+                            "mri": format!("8:orgid:{}", user_id),
+                            "displayName": display_name
+                        });
+                        mentions.push(mention);
+
+                        // Replace @Name with <at> tag
+                        let at_tag = format!("<at id=\"{}\">{}</at>", mention_id, display_name);
+                        processed = processed.replacen(full_match, &at_tag, 1);
+
+                        mention_id += 1;
+                    }
+                }
+            }
+        }
+
+        let mentions_json = serde_json::to_string(&mentions)?;
+        Ok((processed, mentions_json))
+    }
+
     /// Send a message to a team channel (uses Teams internal API)
     pub async fn send_channel_message(
         &self,
@@ -369,6 +416,9 @@ impl TeamsClient {
     ) -> Result<serde_json::Value> {
         let token = self.get_token(SCOPE_IC3).await?;
         let me = self.get_me().await?;
+
+        // Process mentions in content
+        let (processed_content, mentions_json) = self.process_mentions(content).await?;
 
         // Use the channel ID as the conversation ID for the Teams internal API
         let url = format!(
@@ -396,7 +446,7 @@ impl TeamsClient {
             "from": format!("8:orgid:{}", me.id),
             "composetime": now,
             "originalarrivaltime": now,
-            "content": content,
+            "content": processed_content,
             "messagetype": "RichText/Html",
             "contenttype": "Text",
             "imdisplayname": me.display_name,
@@ -411,7 +461,7 @@ impl TeamsClient {
                 "title": "",
                 "cards": "[]",
                 "links": "[]",
-                "mentions": "[]",
+                "mentions": mentions_json,
                 "onbehalfof": null,
                 "files": "[]",
                 "policy_violation": null,
@@ -454,6 +504,9 @@ impl TeamsClient {
         let token = self.get_token(SCOPE_IC3).await?;
         let me = self.get_me().await?;
 
+        // Process mentions in content
+        let (processed_content, mentions_json) = self.process_mentions(content).await?;
+
         // For replies, we need to post to the thread (parent message)
         let url = format!(
             "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{};messageid={}/messages",
@@ -480,7 +533,7 @@ impl TeamsClient {
             "from": format!("8:orgid:{}", me.id),
             "composetime": now,
             "originalarrivaltime": now,
-            "content": content,
+            "content": processed_content,
             "messagetype": "RichText/Html",
             "contenttype": "Text",
             "imdisplayname": me.display_name,
@@ -495,7 +548,7 @@ impl TeamsClient {
                 "title": "",
                 "cards": "[]",
                 "links": "[]",
-                "mentions": "[]",
+                "mentions": mentions_json,
                 "onbehalfof": null,
                 "files": "[]",
                 "policy_violation": null,
@@ -690,6 +743,40 @@ impl TeamsClient {
             let status = res.status();
             let body = res.text().await?;
             Err(anyhow!("Failed to delete message: {} - {}", status, body))
+        }
+    }
+
+    /// Delete a message from a team channel
+    pub async fn delete_channel_message(
+        &self,
+        _team_id: &str,
+        channel_id: &str,
+        message_id: &str,
+    ) -> Result<()> {
+        let token = self.get_token(SCOPE_IC3).await?;
+        let url = format!(
+            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages/{}",
+            channel_id, message_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self.http.delete(&url).headers(headers).send().await?;
+
+        if res.status().is_success() || res.status().as_u16() == 204 {
+            Ok(())
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!(
+                "Failed to delete channel message: {} - {}",
+                status,
+                body
+            ))
         }
     }
 

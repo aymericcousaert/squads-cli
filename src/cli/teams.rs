@@ -90,6 +90,19 @@ pub enum TeamsSubcommand {
         #[arg(short, long)]
         markdown: bool,
     },
+
+    /// Delete a message from a team channel
+    Delete {
+        /// Team ID
+        team_id: String,
+
+        /// Channel ID
+        channel_id: String,
+
+        /// Message ID to delete
+        #[arg(long)]
+        message_id: String,
+    },
 }
 
 #[derive(Debug, Serialize, Tabled)]
@@ -170,6 +183,11 @@ pub async fn execute(cmd: TeamsCommand, config: &Config, format: OutputFormat) -
             )
             .await
         }
+        TeamsSubcommand::Delete {
+            team_id,
+            channel_id,
+            message_id,
+        } => delete(config, &team_id, &channel_id, &message_id).await,
     }
 }
 
@@ -400,5 +418,19 @@ async fn reply(
         print_success("Reply posted");
     }
 
+    Ok(())
+}
+
+async fn delete(
+    config: &Config,
+    team_id: &str,
+    channel_id: &str,
+    message_id: &str,
+) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    client
+        .delete_channel_message(team_id, channel_id, message_id)
+        .await?;
+    print_success("Message deleted");
     Ok(())
 }
