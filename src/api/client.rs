@@ -1084,22 +1084,23 @@ impl TeamsClient {
         }
     }
 
-    /// Send a reaction to a Teams channel message using IC3 API
+    /// Send a reaction to a Teams channel message using Graph API
+    /// Requires ChannelMessage.Send permission
     pub async fn send_team_reaction(
         &self,
-        _team_id: &str,
+        team_id: &str,
         channel_id: &str,
         message_id: &str,
         reaction: &str,
         remove: bool,
     ) -> Result<()> {
-        let token = self.get_token(SCOPE_IC3).await?;
+        let token = self.get_token(SCOPE_GRAPH).await?;
         let unicode = Self::map_reaction(reaction);
 
-        // Use PUT to properties endpoint
+        let action = if remove { "unsetReaction" } else { "setReaction" };
         let url = format!(
-            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages/{}/properties",
-            channel_id, message_id
+            "https://graph.microsoft.com/v1.0/teams/{}/channels/{}/messages/{}/{}",
+            team_id, channel_id, message_id, action
         );
 
         let mut headers = HeaderMap::new();
@@ -1112,43 +1113,13 @@ impl TeamsClient {
             HeaderValue::from_static("application/json"),
         );
 
-        let me = self.get_me().await?;
-        let mri = format!("8:orgid:{}", me.id);
-        let now = chrono::Utc::now().timestamp_millis() as u64;
-
-        // Format: emotions array with key and users
-        let emotion_key = format!("emotion.{}", unicode);
-        let body = if remove {
-            // To remove, send empty users array for this emotion
-            let mut props = serde_json::Map::new();
-            props.insert(
-                emotion_key,
-                serde_json::json!({
-                    "key": unicode,
-                    "users": []
-                }),
-            );
-            serde_json::json!({ "properties": props })
-        } else {
-            // To add, include user in users array
-            let mut props = serde_json::Map::new();
-            props.insert(
-                emotion_key,
-                serde_json::json!({
-                    "key": unicode,
-                    "users": [{
-                        "mri": mri,
-                        "time": now,
-                        "value": unicode
-                    }]
-                }),
-            );
-            serde_json::json!({ "properties": props })
-        };
+        let body = serde_json::json!({
+            "reactionType": unicode
+        });
 
         let res = self
             .http
-            .put(&url)
+            .post(&url)
             .headers(headers)
             .body(body.to_string())
             .send()
