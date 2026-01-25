@@ -1038,7 +1038,7 @@ impl TeamsClient {
             "sad" | "😢" => "sad",
             "angry" | "😡" => "angry",
             "skull" | "💀" => "skull",
-            "hourglass" | "⏳" => "hourglass",
+            "hourglass" | "⏳" => "231b_hourglassdone",
             _ => reaction, // Fallback to raw string
         }
     }
