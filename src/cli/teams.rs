@@ -108,6 +108,26 @@ pub enum TeamsSubcommand {
         message_id: String,
     },
 
+    /// React to a message in a team channel
+    React {
+        /// Team ID
+        team_id: String,
+
+        /// Channel ID
+        channel_id: String,
+
+        /// Message ID to react to
+        #[arg(long)]
+        message_id: String,
+
+        /// Reaction type (like, heart, laugh, surprised, sad, angry, skull, hourglass)
+        reaction: String,
+
+        /// Remove the reaction instead of adding it
+        #[arg(long)]
+        remove: bool,
+    },
+
     /// List images shared in a team channel
     Images {
         /// Team ID
@@ -252,6 +272,13 @@ pub async fn execute(cmd: TeamsCommand, config: &Config, format: OutputFormat) -
             channel_id,
             message_id,
         } => delete(config, &team_id, &channel_id, &message_id).await,
+        TeamsSubcommand::React {
+            team_id,
+            channel_id,
+            message_id,
+            reaction,
+            remove,
+        } => react(config, &team_id, &channel_id, &message_id, &reaction, remove).await,
         TeamsSubcommand::Images {
             team_id,
             channel_id,
@@ -501,6 +528,26 @@ async fn delete(config: &Config, team_id: &str, channel_id: &str, message_id: &s
         .delete_channel_message(team_id, channel_id, message_id)
         .await?;
     print_success("Message deleted");
+    Ok(())
+}
+
+async fn react(
+    config: &Config,
+    team_id: &str,
+    channel_id: &str,
+    message_id: &str,
+    reaction: &str,
+    remove: bool,
+) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    client
+        .send_team_reaction(team_id, channel_id, message_id, reaction, remove)
+        .await?;
+    if remove {
+        print_success("Reaction removed");
+    } else {
+        print_success("Reaction added");
+    }
     Ok(())
 }
 

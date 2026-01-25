@@ -1012,7 +1012,22 @@ impl TeamsClient {
         Err(anyhow!("Failed to reply to message: {} - {}", status, body))
     }
 
-    /// Send a reaction to a message
+    /// Map user-friendly reaction names to Unicode values
+    fn map_reaction(reaction: &str) -> &str {
+        match reaction.to_lowercase().as_str() {
+            "like" | "👍" => "👍",
+            "heart" | "❤️" => "❤️",
+            "laugh" | "😄" => "😄",
+            "surprised" | "😮" => "😮",
+            "sad" | "😢" => "😢",
+            "angry" | "😡" => "😡",
+            "skull" | "💀" => "💀",
+            "hourglass" | "⏳" => "⏳",
+            _ => reaction, // Fallback to raw string
+        }
+    }
+
+    /// Send a reaction to a chat message
     pub async fn send_reaction(
         &self,
         conversation_id: &str,
@@ -1021,18 +1036,7 @@ impl TeamsClient {
         remove: bool,
     ) -> Result<()> {
         let token = self.get_token(SCOPE_GRAPH).await?;
-
-        // Map user-friendly names to Unicode values
-        let unicode = match reaction.to_lowercase().as_str() {
-            "like" | "👍" => "👍",
-            "heart" | "❤️" => "❤️",
-            "laugh" | "😄" => "😄",
-            "surprised" | "😮" => "😮",
-            "sad" | "😢" => "😢",
-            "angry" | "😡" => "😡",
-            "skull" | "💀" => "💀",
-            _ => reaction, // Fallback to raw string
-        };
+        let unicode = Self::map_reaction(reaction);
 
         let action = if remove {
             "unsetReaction"
@@ -1061,6 +1065,90 @@ impl TeamsClient {
         let res = self
             .http
             .post(&url)
+            .headers(headers)
+            .body(body.to_string())
+            .send()
+            .await?;
+
+        if res.status().is_success() || res.status().as_u16() == 204 {
+            Ok(())
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!(
+                "Failed to {} reaction: {} - {}",
+                if remove { "remove" } else { "send" },
+                status,
+                body
+            ))
+        }
+    }
+
+    /// Send a reaction to a Teams channel message using IC3 API
+    pub async fn send_team_reaction(
+        &self,
+        _team_id: &str,
+        channel_id: &str,
+        message_id: &str,
+        reaction: &str,
+        remove: bool,
+    ) -> Result<()> {
+        let token = self.get_token(SCOPE_IC3).await?;
+        let unicode = Self::map_reaction(reaction);
+
+        // Use PUT to properties endpoint
+        let url = format!(
+            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages/{}/properties",
+            channel_id, message_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let me = self.get_me().await?;
+        let mri = format!("8:orgid:{}", me.id);
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+
+        // Format: emotions array with key and users
+        let emotion_key = format!("emotion.{}", unicode);
+        let body = if remove {
+            // To remove, send empty users array for this emotion
+            let mut props = serde_json::Map::new();
+            props.insert(
+                emotion_key,
+                serde_json::json!({
+                    "key": unicode,
+                    "users": []
+                }),
+            );
+            serde_json::json!({ "properties": props })
+        } else {
+            // To add, include user in users array
+            let mut props = serde_json::Map::new();
+            props.insert(
+                emotion_key,
+                serde_json::json!({
+                    "key": unicode,
+                    "users": [{
+                        "mri": mri,
+                        "time": now,
+                        "value": unicode
+                    }]
+                }),
+            );
+            serde_json::json!({ "properties": props })
+        };
+
+        let res = self
+            .http
+            .put(&url)
             .headers(headers)
             .body(body.to_string())
             .send()
