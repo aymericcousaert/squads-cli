@@ -60,7 +60,6 @@ Search across both Mail and Calendar simultaneously.
 - **React in Channel**: `squads-cli teams react <team-id> <channel-id> --message-id <id> <reaction>`
   - Reactions: like, heart, laugh, surprised, sad, angry, skull, hourglass
   - Use `--remove` to remove a reaction
-  - *Note: Requires `ChannelMessage.Send` permission in Azure AD app*
 - **List Images**: `squads-cli teams images <team-id> <channel-id>` (list images in channel messages)
 - **Download Image**: `squads-cli teams download-image <url> --output ./image.png`
 
