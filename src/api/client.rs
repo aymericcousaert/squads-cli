@@ -1013,6 +1013,7 @@ impl TeamsClient {
     }
 
     /// Map user-friendly reaction names to Unicode values
+    /// Map reaction names to emoji (for Graph API / chats)
     fn map_reaction(reaction: &str) -> &str {
         match reaction.to_lowercase().as_str() {
             "like" | "👍" => "👍",
@@ -1023,6 +1024,21 @@ impl TeamsClient {
             "angry" | "😡" => "😡",
             "skull" | "💀" => "💀",
             "hourglass" | "⏳" => "⏳",
+            _ => reaction, // Fallback to raw string
+        }
+    }
+
+    /// Map reaction names to word keys (for IC3 API / Teams channels)
+    fn map_reaction_to_key(reaction: &str) -> &str {
+        match reaction.to_lowercase().as_str() {
+            "like" | "👍" => "like",
+            "heart" | "❤️" => "heart",
+            "laugh" | "😄" => "laugh",
+            "surprised" | "😮" => "surprised",
+            "sad" | "😢" => "sad",
+            "angry" | "😡" => "angry",
+            "skull" | "💀" => "skull",
+            "hourglass" | "⏳" => "hourglass",
             _ => reaction, // Fallback to raw string
         }
     }
@@ -1095,7 +1111,7 @@ impl TeamsClient {
         remove: bool,
     ) -> Result<()> {
         let token = self.get_token(SCOPE_IC3).await?;
-        let unicode = Self::map_reaction(reaction);
+        let reaction_key = Self::map_reaction_to_key(reaction);
 
         // URL-encode the channel_id for the URL path
         let encoded_channel_id = urlencoding::encode(channel_id);
@@ -1122,14 +1138,14 @@ impl TeamsClient {
         let body = if remove {
             serde_json::json!({
                 "emotions": {
-                    "key": unicode,
+                    "key": reaction_key,
                     "value": 0
                 }
             })
         } else {
             serde_json::json!({
                 "emotions": {
-                    "key": unicode,
+                    "key": reaction_key,
                     "value": now
                 }
             })
