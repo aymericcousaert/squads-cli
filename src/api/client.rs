@@ -1084,23 +1084,26 @@ impl TeamsClient {
         }
     }
 
-    /// Send a reaction to a Teams channel message using Graph API
-    /// Requires ChannelMessage.Send permission
+    /// Send a reaction to a Teams channel message using IC3 API
+    /// Uses the same endpoint as the Teams web client
     pub async fn send_team_reaction(
         &self,
-        team_id: &str,
+        _team_id: &str,
         channel_id: &str,
         message_id: &str,
         reaction: &str,
         remove: bool,
     ) -> Result<()> {
-        let token = self.get_token(SCOPE_GRAPH).await?;
+        let token = self.get_token(SCOPE_IC3).await?;
         let unicode = Self::map_reaction(reaction);
 
-        let action = if remove { "unsetReaction" } else { "setReaction" };
+        // URL-encode the channel_id for the URL path
+        let encoded_channel_id = urlencoding::encode(channel_id);
+
+        // Use teams.cloud.microsoft endpoint (same as web client)
         let url = format!(
-            "https://graph.microsoft.com/v1.0/teams/{}/channels/{}/messages/{}/{}",
-            team_id, channel_id, message_id, action
+            "https://teams.cloud.microsoft/api/chatsvc/emea/v1/users/ME/conversations/{}/messages/{}/properties?name=emotions",
+            encoded_channel_id, message_id
         );
 
         let mut headers = HeaderMap::new();
@@ -1113,13 +1116,28 @@ impl TeamsClient {
             HeaderValue::from_static("application/json"),
         );
 
-        let body = serde_json::json!({
-            "reactionType": unicode
-        });
+        // Body format from web client: {"emotions":{"key":"like","value":timestamp}}
+        // For removal, value should be 0
+        let now = chrono::Utc::now().timestamp_millis();
+        let body = if remove {
+            serde_json::json!({
+                "emotions": {
+                    "key": unicode,
+                    "value": 0
+                }
+            })
+        } else {
+            serde_json::json!({
+                "emotions": {
+                    "key": unicode,
+                    "value": now
+                }
+            })
+        };
 
         let res = self
             .http
-            .post(&url)
+            .put(&url)
             .headers(headers)
             .body(body.to_string())
             .send()
