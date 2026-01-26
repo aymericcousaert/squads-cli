@@ -45,6 +45,10 @@ pub enum WatchSource {
 pub async fn execute(cmd: WatchCommand, config: &Config) -> Result<()> {
     let client = TeamsClient::new(config)?;
 
+    // Get current user profile to avoid notifying on own messages
+    let me = client.get_me().await.ok();
+    let my_id = me.as_ref().map(|p| format!("8:orgid:{}", p.id));
+
     println!("{}", "Starting watch mode...".cyan().bold());
     println!(
         "Polling every {} seconds. Press Ctrl+C to stop.",
@@ -101,7 +105,7 @@ pub async fn execute(cmd: WatchCommand, config: &Config) -> Result<()> {
 
         // Check for new chat messages
         if matches!(cmd.source, WatchSource::All | WatchSource::Chats) {
-            check_new_messages(&client, &mut seen_messages, &cmd).await;
+            check_new_messages(&client, &mut seen_messages, &cmd, my_id.as_deref()).await;
         }
 
         // Check for new emails
@@ -111,7 +115,12 @@ pub async fn execute(cmd: WatchCommand, config: &Config) -> Result<()> {
     }
 }
 
-async fn check_new_messages(client: &TeamsClient, seen: &mut HashSet<String>, cmd: &WatchCommand) {
+async fn check_new_messages(
+    client: &TeamsClient,
+    seen: &mut HashSet<String>,
+    cmd: &WatchCommand,
+    my_id: Option<&str>,
+) {
     let details = match client.get_user_details().await {
         Ok(d) => d,
         Err(_) => return,
@@ -139,6 +148,13 @@ async fn check_new_messages(client: &TeamsClient, seen: &mut HashSet<String>, cm
             }
 
             seen.insert(msg_id);
+
+            // Skip messages from self
+            if let Some(my_id) = my_id {
+                if msg.from.as_deref() == Some(my_id) {
+                    continue;
+                }
+            }
 
             // Skip non-user messages
             if msg.message_type.as_deref() != Some("RichText/Html")

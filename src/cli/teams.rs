@@ -278,7 +278,17 @@ pub async fn execute(cmd: TeamsCommand, config: &Config, format: OutputFormat) -
             message_id,
             reaction,
             remove,
-        } => react(config, &team_id, &channel_id, &message_id, &reaction, remove).await,
+        } => {
+            react(
+                config,
+                &team_id,
+                &channel_id,
+                &message_id,
+                &reaction,
+                remove,
+            )
+            .await
+        }
         TeamsSubcommand::Images {
             team_id,
             channel_id,
