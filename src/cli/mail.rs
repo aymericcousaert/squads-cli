@@ -113,6 +113,14 @@ pub enum MailSubcommand {
         /// Reply to all recipients
         #[arg(long)]
         all: bool,
+
+        /// CC recipients, comma-separated
+        #[arg(short, long)]
+        cc: Option<String>,
+
+        /// BCC recipients, comma-separated
+        #[arg(short, long)]
+        bcc: Option<String>,
     },
 
     /// Forward an email
@@ -231,7 +239,9 @@ pub async fn execute(cmd: MailCommand, config: &Config, format: OutputFormat) ->
             message_id,
             body,
             all,
-        } => reply(config, &message_id, &body, all).await,
+            cc,
+            bcc,
+        } => reply(config, &message_id, &body, all, cc, bcc).await,
         MailSubcommand::Forward {
             message_id,
             to,
@@ -516,9 +526,35 @@ async fn draft(
     Ok(())
 }
 
-async fn reply(config: &Config, message_id: &str, body: &str, reply_all: bool) -> Result<()> {
+async fn reply(
+    config: &Config,
+    message_id: &str,
+    body: &str,
+    reply_all: bool,
+    cc: Option<String>,
+    bcc: Option<String>,
+) -> Result<()> {
     let client = TeamsClient::new(config)?;
-    client.reply_mail(message_id, body, reply_all).await?;
+
+    // Parse CC recipients
+    let cc_list: Option<Vec<String>> = cc
+        .as_ref()
+        .map(|c| c.split(',').map(|s| s.trim().to_string()).collect());
+    let cc_refs: Option<Vec<&str>> = cc_list
+        .as_ref()
+        .map(|v| v.iter().map(|s| s.as_str()).collect());
+
+    // Parse BCC recipients
+    let bcc_list: Option<Vec<String>> = bcc
+        .as_ref()
+        .map(|b| b.split(',').map(|s| s.trim().to_string()).collect());
+    let bcc_refs: Option<Vec<&str>> = bcc_list
+        .as_ref()
+        .map(|v| v.iter().map(|s| s.as_str()).collect());
+
+    client
+        .reply_mail(message_id, body, reply_all, cc_refs, bcc_refs)
+        .await?;
 
     if reply_all {
         print_success("Reply sent to all recipients");

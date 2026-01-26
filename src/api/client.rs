@@ -1530,7 +1530,14 @@ impl TeamsClient {
     }
 
     /// Reply to an email
-    pub async fn reply_mail(&self, message_id: &str, body: &str, reply_all: bool) -> Result<()> {
+    pub async fn reply_mail(
+        &self,
+        message_id: &str,
+        body: &str,
+        reply_all: bool,
+        cc: Option<Vec<&str>>,
+        bcc: Option<Vec<&str>>,
+    ) -> Result<()> {
         let token = self.get_token(SCOPE_GRAPH).await?;
         let endpoint = if reply_all { "replyAll" } else { "reply" };
         let url = format!(
@@ -1548,13 +1555,49 @@ impl TeamsClient {
             HeaderValue::from_static("application/json"),
         );
 
-        let request = serde_json::json!({
-            "message": {
-                "body": {
-                    "contentType": "Text",
-                    "content": body
-                }
+        // Build CC recipients if provided
+        let cc_recipients: Option<Vec<Recipient>> = cc.map(|emails| {
+            emails
+                .iter()
+                .map(|email| Recipient {
+                    email_address: EmailAddress {
+                        address: email.to_string(),
+                        name: None,
+                    },
+                })
+                .collect()
+        });
+
+        // Build BCC recipients if provided
+        let bcc_recipients: Option<Vec<Recipient>> = bcc.map(|emails| {
+            emails
+                .iter()
+                .map(|email| Recipient {
+                    email_address: EmailAddress {
+                        address: email.to_string(),
+                        name: None,
+                    },
+                })
+                .collect()
+        });
+
+        // Build request with optional CC and BCC
+        let mut message = serde_json::json!({
+            "body": {
+                "contentType": "Text",
+                "content": body
             }
+        });
+
+        if let Some(cc) = cc_recipients {
+            message["ccRecipients"] = serde_json::json!(cc);
+        }
+        if let Some(bcc) = bcc_recipients {
+            message["bccRecipients"] = serde_json::json!(bcc);
+        }
+
+        let request = serde_json::json!({
+            "message": message
         });
 
         let res = self
