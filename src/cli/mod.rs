@@ -6,6 +6,7 @@ pub mod completions;
 pub mod feed;
 pub mod install;
 pub mod mail;
+pub mod notes;
 pub mod output;
 pub mod search;
 pub mod teams;
@@ -47,6 +48,9 @@ pub enum Commands {
 
     /// Outlook mail operations
     Mail(mail::MailCommand),
+
+    /// Shortcut to personal notes
+    Notes(notes::NotesCommand),
 
     /// Outlook calendar operations
     Calendar(calendar::CalendarCommand),
