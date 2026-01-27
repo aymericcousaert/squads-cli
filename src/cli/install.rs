@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::env;
 use std::fs;
 
-use super::output::print_success;
+use super::output::{print_success, print_warning};
 
 pub fn execute() -> Result<()> {
     // 1. Get current executable path
@@ -22,6 +22,15 @@ pub fn execute() -> Result<()> {
         fs::create_dir_all(&bin_dir).context("Failed to create ~/.local/bin directory")?;
     }
 
+    if current_exe == dest {
+        print_success(&format!("Already installed at {:?}", dest));
+        return Ok(());
+    }
+
+    if dest.exists() {
+        fs::remove_file(&dest).context("Failed to remove existing install")?;
+    }
+
     // 4. Copy binary
     fs::copy(&current_exe, &dest).context(format!(
         "Failed to copy binary from {:?} to {:?}",
@@ -35,6 +44,19 @@ pub fn execute() -> Result<()> {
         let mut perms = fs::metadata(&dest)?.permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&dest, perms)?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+
+        // Clear quarantine/provenance attributes if present
+        let _ = Command::new("/usr/bin/xattr").arg("-c").arg(&dest).status();
+
+        let status = Command::new(&dest).arg("--version").status();
+        if status.as_ref().map(|s| s.success()).unwrap_or(false) == false {
+            print_warning("Installed binary failed to run. Try running from target/release or rebuild/install again.");
+        }
     }
 
     print_success(&format!("Successfully installed to {:?}", dest));
