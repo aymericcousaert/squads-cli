@@ -433,7 +433,7 @@ async fn messages(
                 .into_iter()
                 .map(|msg| {
                     let content = msg.content.map(|c| strip_html(&c)).unwrap_or_default();
-                    let reactions = format_reactions_summary(&msg.properties);
+                    let reactions = crate::api::emoji::format_reactions_summary(&msg.properties);
 
                     let mut status = Vec::new();
                     if let Some(props) = &msg.properties {
@@ -467,27 +467,6 @@ async fn messages(
         }
     }
     Ok(())
-}
-
-/// Format reactions as a summary string (e.g., "👍2 ❤️1")
-fn format_reactions_summary(props: &Option<crate::types::MessageProperties>) -> String {
-    if let Some(properties) = props {
-        if let Some(emotions) = &properties.emotions {
-            let parts: Vec<String> = emotions
-                .iter()
-                .map(|e| {
-                    let count = e.users.len();
-                    if count > 1 {
-                        format!("{}{}", e.key, count)
-                    } else {
-                        e.key.clone()
-                    }
-                })
-                .collect();
-            return parts.join(" ");
-        }
-    }
-    String::new()
 }
 
 async fn send(

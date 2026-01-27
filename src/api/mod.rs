@@ -3,6 +3,7 @@
 
 pub mod auth;
 pub mod client;
+pub mod emoji;
 
 pub use auth::*;
 pub use client::*;

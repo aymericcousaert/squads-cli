@@ -1012,38 +1012,8 @@ impl TeamsClient {
         Err(anyhow!("Failed to reply to message: {} - {}", status, body))
     }
 
-    /// Map user-friendly reaction names to Unicode values
-    /// Map reaction names to emoji (for Graph API / chats)
-    fn map_reaction(reaction: &str) -> &str {
-        match reaction.to_lowercase().as_str() {
-            "like" | "👍" => "👍",
-            "heart" | "❤️" => "❤️",
-            "laugh" | "😄" => "😄",
-            "surprised" | "😮" => "😮",
-            "sad" | "😢" => "😢",
-            "angry" | "😡" => "😡",
-            "skull" | "💀" => "💀",
-            "hourglass" | "⏳" => "⏳",
-            _ => reaction, // Fallback to raw string
-        }
-    }
-
-    /// Map reaction names to word keys (for IC3 API / Teams channels)
-    fn map_reaction_to_key(reaction: &str) -> &str {
-        match reaction.to_lowercase().as_str() {
-            "like" | "👍" => "like",
-            "heart" | "❤️" => "heart",
-            "laugh" | "😄" => "laugh",
-            "surprised" | "😮" => "surprised",
-            "sad" | "😢" => "sad",
-            "angry" | "😡" => "angry",
-            "skull" | "💀" => "skull",
-            "hourglass" | "⏳" => "231b_hourglassdone",
-            _ => reaction, // Fallback to raw string
-        }
-    }
-
     /// Send a reaction to a chat message
+
     pub async fn send_reaction(
         &self,
         conversation_id: &str,
@@ -1052,7 +1022,7 @@ impl TeamsClient {
         remove: bool,
     ) -> Result<()> {
         let token = self.get_token(SCOPE_GRAPH).await?;
-        let unicode = Self::map_reaction(reaction);
+        let unicode = super::emoji::map_to_unicode(reaction);
 
         let action = if remove {
             "unsetReaction"
@@ -1111,7 +1081,7 @@ impl TeamsClient {
         remove: bool,
     ) -> Result<()> {
         let token = self.get_token(SCOPE_IC3).await?;
-        let reaction_key = Self::map_reaction_to_key(reaction);
+        let reaction_key = super::emoji::map_to_key(reaction);
 
         // URL-encode the channel_id for the URL path
         let encoded_channel_id = urlencoding::encode(channel_id);

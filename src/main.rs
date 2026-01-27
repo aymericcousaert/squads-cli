@@ -28,6 +28,9 @@ async fn main() -> Result<()> {
     // Load configuration
     let config = config::Config::load()?;
 
+    // Initialize emoji mapping
+    api::emoji::init().await?;
+
     // Execute command
     match cli.command {
         Commands::Auth(cmd) => cli::auth::execute(cmd, &config).await,
