@@ -17,7 +17,7 @@ Search across both Mail and Calendar simultaneously.
 - **Options**: `--limit <N>`, `--format [json|table|plain]`
 
 ### 2. Teams Chats
-- **List Chats**: `squads-cli chats list`
+- **List Chats**: `squads-cli chats list` (supports `--limit <N>`)
 - **View Messages**: `squads-cli chats messages <chat-id>` (includes reactions column)
 - **Send Message**: `squads-cli chats send <chat-id> "<content>"`
   - Support for `--markdown` and `--stdin`.

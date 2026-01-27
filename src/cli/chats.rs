@@ -21,7 +21,11 @@ pub struct ChatsCommand {
 #[derive(Subcommand, Debug)]
 pub enum ChatsSubcommand {
     /// List all chats
-    List,
+    List {
+        /// Maximum number of chats to return
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+    },
 
     /// Show chat details
     Show {
@@ -303,7 +307,7 @@ struct ReactionJson {
 
 pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -> Result<()> {
     match cmd.command {
-        ChatsSubcommand::List => list(config, format).await,
+        ChatsSubcommand::List { limit } => list(config, limit, format).await,
         ChatsSubcommand::Show { chat_id } => show(config, &chat_id, format).await,
         ChatsSubcommand::Messages { chat_id, limit } => {
             messages(config, &chat_id, limit, format).await
@@ -356,13 +360,14 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
     }
 }
 
-async fn list(config: &Config, format: OutputFormat) -> Result<()> {
+async fn list(config: &Config, limit: usize, format: OutputFormat) -> Result<()> {
     let client = TeamsClient::new(config)?;
     let details = client.get_user_details().await?;
 
     let rows: Vec<ChatRow> = details
         .chats
         .into_iter()
+        .take(limit)
         .map(|chat| {
             let title = chat.title.unwrap_or_else(|| {
                 // For 1:1 chats, show member info

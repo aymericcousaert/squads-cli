@@ -60,8 +60,8 @@ squads-cli search "project" --limit 10 --format json
 ### Chats
 
 ```bash
-# List all chats
-squads-cli chats list
+# List all chats (default limit: 50)
+squads-cli chats list --limit 20
 
 # Get chat messages
 squads-cli chats messages <chat-id>
