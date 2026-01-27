@@ -1,9 +1,9 @@
+use crate::config::Config;
 use anyhow::{Context, Result};
+use serde_json;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use tokio::fs;
-use serde_json;
-use crate::config::Config;
 
 const EMOJI_METADATA_URL: &str = "https://statics.teams.cdn.office.net/evergreen-assets/personal-expressions/v1/metadata/a098bcb732fd7dd80ce11c12ad15767f/en-us.json";
 
@@ -43,8 +43,11 @@ async fn try_init() -> Result<(HashMap<String, String>, HashMap<String, String>)
         let res = reqwest::get(EMOJI_METADATA_URL)
             .await
             .context("Failed to download emoji metadata")?;
-        let data: serde_json::Value = res.json().await.context("Failed to parse emoji metadata JSON")?;
-        
+        let data: serde_json::Value = res
+            .json()
+            .await
+            .context("Failed to parse emoji metadata JSON")?;
+
         let mut mapping = HashMap::new();
         if let Some(categories) = data.get("categories").and_then(|v| v.as_array()) {
             for cat in categories {
@@ -52,7 +55,7 @@ async fn try_init() -> Result<(HashMap<String, String>, HashMap<String, String>)
                     for emo in emoticons {
                         if let (Some(id), Some(unicode)) = (
                             emo.get("id").and_then(|v| v.as_str()),
-                            emo.get("unicode").and_then(|v| v.as_str())
+                            emo.get("unicode").and_then(|v| v.as_str()),
                         ) {
                             // Only insert if not already present to prefer the first key found (often more descriptive)
                             // or to maintain consistency if multiple keys exist for same unicode.
@@ -62,14 +65,14 @@ async fn try_init() -> Result<(HashMap<String, String>, HashMap<String, String>)
                 }
             }
         }
-        
+
         // Save to cache
         if let Some(parent) = cache_path.parent() {
             fs::create_dir_all(parent).await?;
         }
         let content = serde_json::to_string_pretty(&mapping)?;
         fs::write(&cache_path, content).await?;
-        
+
         mapping
     };
 
@@ -77,7 +80,7 @@ async fn try_init() -> Result<(HashMap<String, String>, HashMap<String, String>)
         .iter()
         .map(|(k, v)| (v.clone(), k.clone()))
         .collect();
-    
+
     Ok((mapping, reverse))
 }
 
@@ -153,7 +156,7 @@ mod tests {
 
         // Test basic mapping
         assert_eq!(get_emoji_by_key("like"), Some("👍"));
-        
+
         // Test reverse mapping
         let key_for_thumbsup = get_key_by_emoji("👍").expect("Should find a key for 👍");
         assert!(key_for_thumbsup == "like" || key_for_thumbsup == "yes");
@@ -162,11 +165,11 @@ mod tests {
         assert_eq!(map_to_unicode("like"), "👍");
         assert_eq!(map_to_unicode("👍"), "👍");
         assert_eq!(map_to_unicode("skull"), "💀");
-        
+
         // Test utility functions (map_to_key)
         let mapped_key = map_to_key("👍");
         assert!(mapped_key == "like" || mapped_key == "yes");
-        
+
         // Test weird/specific keys from Teams asset
         assert_eq!(map_to_unicode("meltingface"), "🫠");
         assert_eq!(map_to_unicode("1f92f_explodinghead"), "🤯");

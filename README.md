@@ -82,6 +82,11 @@ squads-cli chats reply <chat-id> --message-id <msg-id> "My reply"
 squads-cli chats react <chat-id> --message-id <msg-id> unicornhead
 squads-cli chats react <chat-id> --message-id <msg-id> 🦄
 
+# Download a file (supports piping to stdout)
+squads-cli chats download-file <chat-id> <file-url> --output "file.docx"
+# We recommend using piping for AI agents to process files without saving to disk
+squads-cli chats download-file <chat-id> <file-url> -o - | textutil -convert txt -stdin -stdout
+
 ### Personal Notes
 
 Shortcut to your personal "Notes" chat.

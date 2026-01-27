@@ -1013,7 +1013,6 @@ impl TeamsClient {
     }
 
     /// Send a reaction to a chat message
-
     pub async fn send_reaction(
         &self,
         conversation_id: &str,
@@ -2290,29 +2289,59 @@ impl TeamsClient {
 
     /// Download a file from SharePoint/OneDrive using its share URL
     pub async fn download_sharepoint_file(&self, file_url: &str) -> Result<(String, Vec<u8>)> {
-        let token = self.get_token(SCOPE_GRAPH).await?;
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
 
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            HeaderName::from_static("authorization"),
-            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
-        );
+        // Try to use Graph API shares endpoint first as it's more reliable for shared files
+        // logic: base64 encode URL, replace chars, prepend u!
+        if file_url.contains("sharepoint.com") || file_url.contains("1drv.ms") {
+            let encoded_url = STANDARD.encode(file_url);
+            let encoded_url = "u!".to_string()
+                + &encoded_url
+                    .trim_end_matches('=')
+                    .replace('/', "_")
+                    .replace('+', "-");
+            let graph_url = format!(
+                "https://graph.microsoft.com/v1.0/shares/{}/driveItem/content",
+                encoded_url
+            );
 
-        let res = self.http.get(file_url).headers(headers).send().await?;
+            let token = self.get_token(super::SCOPE_GRAPH).await?;
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                HeaderName::from_static("authorization"),
+                HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+            );
 
-        if res.status().is_success() {
-            let content_type = res
-                .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("application/octet-stream")
-                .to_string();
-            let bytes = res.bytes().await?.to_vec();
-            Ok((content_type, bytes))
-        } else {
-            let status = res.status();
-            let body = res.text().await?;
-            Err(anyhow!("Failed to download file: {} - {}", status, body))
+            let res = self.http.get(&graph_url).headers(headers).send().await?;
+
+            if res.status().is_success() || res.status() == reqwest::StatusCode::FOUND {
+                let final_res = if res.status() == reqwest::StatusCode::FOUND {
+                    if let Some(location) = res.headers().get("Location") {
+                        let location_url = location.to_str().unwrap_or_default().to_string();
+                        // Pre-signed URLs usually don't need auth headers
+                        self.http.get(&location_url).send().await?
+                    } else {
+                        res
+                    }
+                } else {
+                    res
+                };
+
+                if final_res.status().is_success() {
+                    let content_type = final_res
+                        .headers()
+                        .get("content-type")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("application/octet-stream")
+                        .to_string();
+                    let bytes = final_res.bytes().await?.to_vec();
+                    return Ok((content_type, bytes));
+                }
+            }
         }
+
+        Err(anyhow!(
+            "Failed to download file: URL is not a supported SharePoint/OneDrive share link"
+        ))
     }
 }

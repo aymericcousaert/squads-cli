@@ -1,14 +1,14 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use serde::Serialize;
-use tabled::Tabled;
 use std::io::{self, Read};
+use tabled::Tabled;
 
-use crate::api::TeamsClient;
-use crate::config::Config;
-use super::output::{print_output, print_success, print_error};
+use super::output::{print_error, print_output, print_success};
 use super::utils::{html_escape, markdown_to_html, strip_html, truncate};
 use super::OutputFormat;
+use crate::api::TeamsClient;
+use crate::config::Config;
 
 const NOTES_CHAT_ID: &str = "48:notes";
 
@@ -59,7 +59,11 @@ struct NoteRow {
 pub async fn execute(cmd: NotesCommand, config: &Config, format: OutputFormat) -> Result<()> {
     match cmd.command {
         NotesSubcommand::List { limit } => list(config, limit, format).await,
-        NotesSubcommand::Add { message, stdin, markdown } => add(config, message, stdin, markdown).await,
+        NotesSubcommand::Add {
+            message,
+            stdin,
+            markdown,
+        } => add(config, message, stdin, markdown).await,
         NotesSubcommand::Delete { message_id } => delete(config, &message_id).await,
     }
 }
@@ -68,10 +72,12 @@ async fn list(config: &Config, limit: usize, format: OutputFormat) -> Result<()>
     let client = TeamsClient::new(config)?;
     let convs = client.get_conversations(NOTES_CHAT_ID, None).await?;
 
-    let rows: Vec<NoteRow> = convs.messages
+    let rows: Vec<NoteRow> = convs
+        .messages
         .into_iter()
         .filter(|msg| {
-            msg.message_type.as_deref() == Some("RichText/Html") || msg.message_type.as_deref() == Some("Text")
+            msg.message_type.as_deref() == Some("RichText/Html")
+                || msg.message_type.as_deref() == Some("Text")
         })
         .take(limit)
         .map(|msg| {

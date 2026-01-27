@@ -28,6 +28,7 @@ Search across both Mail and Calendar simultaneously.
 - **View Mentions**: `squads-cli chats mentions` (find messages where you are @mentioned)
 - **List Files**: `squads-cli chats files <chat-id>` (list files shared in a chat)
 - **Download File**: `squads-cli chats download-file <chat-id> <file-id> --output ./file.pdf`
+  - **Piping**: Use `-o -` to pipe content: `squads-cli chats download-file ... -o - | cat`
 - **List Images**: `squads-cli chats images <chat-id>` (list images in chat messages)
 - **Download Image**: `squads-cli chats download-image <url> --output ./image.png`
 
@@ -86,6 +87,7 @@ Shortcut to manage your personal "Notes" chat.
 8. **Access Shared Content**: Use `squads-cli chats images` and `squads-cli chats files` to list and download content shared in chats.
 9. **Monitor Reactions for Feedback**: Use `squads-cli chats messages` to see reactions summary, or `squads-cli chats reactions` for detailed info on who reacted. Reactions like thumbs up indicate approval/acknowledgment.
 10. **Writing Style**: Refer to `WRITING_STYLE.md` in this directory to understand and mimic the user's communication style (tone, vocabulary, formatting) when sending messages or replies.
+11. **Piping Files**: When needing to read file content (like .txt, .md, .csv, .json) from a chat, prefer using piping (`-o -`) to process it directly in memory rather than saving to a temporary file. Example: `squads-cli chats download-file ... -o - | cat`.
 
 ## Authentication
 

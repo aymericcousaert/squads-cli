@@ -54,7 +54,7 @@ pub fn execute() -> Result<()> {
         let _ = Command::new("/usr/bin/xattr").arg("-c").arg(&dest).status();
 
         let status = Command::new(&dest).arg("--version").status();
-        if status.as_ref().map(|s| s.success()).unwrap_or(false) == false {
+        if !status.as_ref().map(|s| s.success()).unwrap_or(false) {
             print_warning("Installed binary failed to run. Try running from target/release or rebuild/install again.");
         }
     }

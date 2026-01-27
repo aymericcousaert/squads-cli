@@ -770,25 +770,31 @@ async fn download_file(
 
     let (content_type, bytes) = client.download_sharepoint_file(&file_url).await?;
 
-    let output_path = output.unwrap_or_else(|| {
-        // Try to extract filename from URL or use default
-        file_url
-            .split('/')
-            .next_back()
-            .unwrap_or("downloaded_file")
-            .split('?')
-            .next()
-            .unwrap_or("downloaded_file")
-            .to_string()
-    });
+    if output.as_deref() == Some("-") {
+        use std::io::Write;
+        io::stdout().write_all(&bytes)?;
+        io::stdout().flush()?;
+    } else {
+        let output_path = output.unwrap_or_else(|| {
+            // Try to extract filename from URL or use default
+            file_url
+                .split('/')
+                .next_back()
+                .unwrap_or("downloaded_file")
+                .split('?')
+                .next()
+                .unwrap_or("downloaded_file")
+                .to_string()
+        });
 
-    std::fs::write(&output_path, &bytes)?;
-    print_success(&format!(
-        "Downloaded {} ({}, {} bytes)",
-        output_path,
-        content_type,
-        bytes.len()
-    ));
+        std::fs::write(&output_path, &bytes)?;
+        print_success(&format!(
+            "Downloaded {} ({}, {} bytes)",
+            output_path,
+            content_type,
+            bytes.len()
+        ));
+    }
 
     Ok(())
 }
