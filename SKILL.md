@@ -23,7 +23,7 @@ Search across both Mail and Calendar simultaneously.
   - Support for `--markdown` and `--stdin`.
 - **Reply**: `squads-cli chats reply <chat-id> --message-id <msg-id> "<content>"`
   - Support for `--markdown`.
-- **React**: `squads-cli chats react <chat-id> --message-id <msg-id> <reaction>` (e.g., like, heart, laugh, surprised, sad, angry)
+- **React**: `squads-cli chats react <chat-id> --message-id <msg-id> <reaction>` (Supports all Teams emojis by name like `unicornhead`, `meltingface`, or characters like `🦄`)
 - **View Reactions**: `squads-cli chats reactions <chat-id> --message-id <msg-id>` (see who reacted to a message)
 - **View Mentions**: `squads-cli chats mentions` (find messages where you are @mentioned)
 - **List Files**: `squads-cli chats files <chat-id>` (list files shared in a chat)
@@ -67,6 +67,12 @@ Search across both Mail and Calendar simultaneously.
 - **View All Activity**: `squads-cli feed` (combined view of chats and emails)
 - **Filter by Mentions**: `squads-cli feed --mentions-only` (only items where you are @mentioned)
 - **Filter Unread**: `squads-cli feed --unread`
+
+### 8. Personal Notes
+Shortcut to manage your personal "Notes" chat.
+- **List Notes**: `squads-cli notes list`
+- **Add Note**: `squads-cli notes add "<content>"` (Supports `--markdown` and `--stdin`)
+- **Delete Note**: `squads-cli notes delete <msg-id>`
 
 ## Best Practices for Agents
 

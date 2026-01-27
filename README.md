@@ -15,6 +15,7 @@ A command-line interface for Microsoft Teams, designed for AI agents (Claude Cod
 - **Teams support**: Browse teams and channels
 - **User management**: Search and view user profiles
 - **Activity feed**: View notifications and mentions
+- **Personal Notes**: Shortcut command to manage your personal notes chat
 
 ## Installation
 
@@ -77,8 +78,24 @@ squads-cli chats send <chat-id> "**Bold** and _italic_" --markdown
 # Reply to a message (with citation fallback for 1:1 chats)
 squads-cli chats reply <chat-id> --message-id <msg-id> "My reply"
 
-# React to a message (like, heart, laugh, surprised, sad, angry)
-squads-cli chats react <chat-id> --message-id <msg-id> heart
+# React to a message (full support for Teams emojis by name or character)
+squads-cli chats react <chat-id> --message-id <msg-id> unicornhead
+squads-cli chats react <chat-id> --message-id <msg-id> 🦄
+
+### Personal Notes
+
+Shortcut to your personal "Notes" chat.
+
+```bash
+# Add a new note
+squads-cli notes add "Remember to check the crawler-batch"
+
+# List recent notes
+squads-cli notes list
+
+# Delete a note
+squads-cli notes delete <message-id>
+```
 
 ### Outlook Mail
 

@@ -565,4 +565,6 @@ This approach delivers maximum value for AI agents quickly while maintaining ext
 12. [x] Add reaction support to messages
 13. [x] Shell completions
 14. [x] Self-installation command (`install`)
-15. [ ] Further polish
+15. [x] Extensive Emoji support (official metadata mapping)
+16. [x] Personal Notes shortcut (`notes` command)
+17. [ ] Further polish
