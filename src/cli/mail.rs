@@ -9,7 +9,7 @@ use crate::api::TeamsClient;
 use crate::config::Config;
 
 use super::output::{print_error, print_output, print_single, print_success};
-use super::utils::{strip_html, truncate};
+use super::utils::{markdown_to_html, strip_html, truncate};
 use super::OutputFormat;
 
 #[derive(Args, Debug)]
@@ -64,6 +64,14 @@ pub enum MailSubcommand {
         /// Read body from file
         #[arg(long)]
         file: Option<String>,
+
+        /// Treat body as Markdown and convert to HTML
+        #[arg(short, long)]
+        markdown: bool,
+
+        /// Send raw HTML without escaping
+        #[arg(long)]
+        html: bool,
     },
 
     /// Search emails
@@ -100,6 +108,14 @@ pub enum MailSubcommand {
         /// Read body from file
         #[arg(long)]
         file: Option<String>,
+
+        /// Treat body as Markdown and convert to HTML
+        #[arg(short, long)]
+        markdown: bool,
+
+        /// Send raw HTML without escaping
+        #[arg(long)]
+        html: bool,
     },
 
     /// Reply to an email
@@ -225,7 +241,9 @@ pub async fn execute(cmd: MailCommand, config: &Config, format: OutputFormat) ->
             cc,
             stdin,
             file,
-        } => send(config, &to, &subject, body, cc, stdin, file).await,
+            markdown,
+            html,
+        } => send(config, &to, &subject, body, cc, stdin, file, markdown, html).await,
         MailSubcommand::Search { query, limit } => search(config, &query, limit, format).await,
         MailSubcommand::Draft {
             to,
@@ -234,7 +252,9 @@ pub async fn execute(cmd: MailCommand, config: &Config, format: OutputFormat) ->
             cc,
             stdin,
             file,
-        } => draft(config, &to, &subject, body, cc, stdin, file, format).await,
+            markdown,
+            html,
+        } => draft(config, &to, &subject, body, cc, stdin, file, markdown, html, format).await,
         MailSubcommand::Reply {
             message_id,
             body,
@@ -384,6 +404,7 @@ async fn read(config: &Config, message_id: &str, format: OutputFormat) -> Result
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send(
     config: &Config,
     to: &str,
@@ -392,6 +413,8 @@ async fn send(
     cc: Option<String>,
     stdin: bool,
     file: Option<String>,
+    markdown: bool,
+    html: bool,
 ) -> Result<()> {
     // Get the body content
     let content = if let Some(b) = body {
@@ -412,6 +435,16 @@ async fn send(
         return Ok(());
     }
 
+    // Convert content to HTML if markdown or html flag is set
+    let (final_body, content_type) = if html {
+        (content, "HTML")
+    } else if markdown {
+        (markdown_to_html(&content), "HTML")
+    } else {
+        // Keep as plain text
+        (content, "Text")
+    };
+
     let client = TeamsClient::new(config)?;
 
     // Parse recipients
@@ -424,7 +457,7 @@ async fn send(
         .map(|v| v.iter().map(|s| s.as_str()).collect());
 
     client
-        .send_mail(to_list, subject, &content, cc_refs)
+        .send_mail(to_list, subject, &final_body, cc_refs, content_type)
         .await?;
     print_success("Email sent successfully");
 
@@ -470,6 +503,8 @@ async fn draft(
     cc: Option<String>,
     stdin: bool,
     file: Option<String>,
+    markdown: bool,
+    html: bool,
     format: OutputFormat,
 ) -> Result<()> {
     // Get the body content
@@ -491,6 +526,16 @@ async fn draft(
         return Ok(());
     }
 
+    // Convert content to HTML if markdown or html flag is set
+    let (final_body, content_type) = if html {
+        (content, "HTML")
+    } else if markdown {
+        (markdown_to_html(&content), "HTML")
+    } else {
+        // Keep as plain text
+        (content, "Text")
+    };
+
     let client = TeamsClient::new(config)?;
 
     // Parse recipients
@@ -503,7 +548,7 @@ async fn draft(
         .map(|v| v.iter().map(|s| s.as_str()).collect());
 
     let draft = client
-        .create_draft(to_list, subject, &content, cc_refs)
+        .create_draft(to_list, subject, &final_body, cc_refs, content_type)
         .await?;
 
     match format {

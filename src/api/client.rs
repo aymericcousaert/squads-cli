@@ -1306,6 +1306,7 @@ impl TeamsClient {
         subject: &str,
         body: &str,
         cc: Option<Vec<&str>>,
+        content_type: &str,
     ) -> Result<()> {
         let token = self.get_token(SCOPE_GRAPH).await?;
         let url = "https://graph.microsoft.com/v1.0/me/sendMail";
@@ -1346,7 +1347,7 @@ impl TeamsClient {
             message: SendMailMessage {
                 subject: subject.to_string(),
                 body: ItemBody {
-                    content_type: "Text".to_string(),
+                    content_type: content_type.to_string(),
                     content: body.to_string(),
                 },
                 to_recipients,
@@ -1434,6 +1435,7 @@ impl TeamsClient {
         subject: &str,
         body: &str,
         cc: Option<Vec<&str>>,
+        content_type: &str,
     ) -> Result<MailMessage> {
         let token = self.get_token(SCOPE_GRAPH).await?;
         let url = "https://graph.microsoft.com/v1.0/me/messages";
@@ -1473,7 +1475,7 @@ impl TeamsClient {
         let request = CreateDraftRequest {
             subject: subject.to_string(),
             body: ItemBody {
-                content_type: "Text".to_string(),
+                content_type: content_type.to_string(),
                 content: body.to_string(),
             },
             to_recipients,

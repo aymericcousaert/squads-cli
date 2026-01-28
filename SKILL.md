@@ -36,6 +36,7 @@ Search across both Mail and Calendar simultaneously.
 - **List/Search**: `squads-cli mail list` or `squads-cli mail search "<query>"`
 - **Read**: `squads-cli mail read <msg-id>`
 - **Send/Draft**: `squads-cli mail send --to <email> --subject <sub...> "<body>"`
+  - Support for `--markdown` (convert Markdown to HTML) and `--html` (raw HTML).
 - **Management**: `squads-cli mail mark <msg-id> --read`, `squads-cli mail delete <msg-id>`
 
 ### 4. Calendar & Availability
@@ -80,7 +81,7 @@ Shortcut to manage your personal "Notes" chat.
 1. **Structured Output**: Always use `--format json` when you need to parse results programmatically (e.g., extracting `chat-id` or `msg-id`).
 2. **Context Discovery**: Start by listing chats or mail to find relevant IDs before performing actions.
 3. **Availability Checks**: When scheduling, use `free-busy` first to find common slots.
-4. **Markdown**: **ALWAYS** use `--markdown` when your message contains formatting characters like `**bold**`, `` `code` ``, or ` ``` ` code blocks. Without this flag, these characters are sent as literal text and won't render properly in Teams.
+4. **Markdown**: **ALWAYS** use `--markdown` when your message contains formatting characters like `**bold**`, `` `code` ``, or ` ``` ` code blocks. Without this flag, these characters are sent as literal text and won't render properly in Teams or Outlook emails.
 5. **Check Presence Before Reaching Out**: Use `squads-cli users presence --user "<email>"` to check if someone is Available/Busy/Away before messaging.
 6. **Find Users by Name**: Use `squads-cli users search "John"` to find user email/ID for messaging.
 7. **Monitor Mentions**: Use `squads-cli chats mentions` or `squads-cli feed --mentions-only` to find messages that need your attention.

@@ -117,8 +117,14 @@ squads-cli mail search "invoice"
 # Send an email
 squads-cli mail send --to "user@example.com" --subject "Hello" "Email body"
 
+# Send with markdown formatting (bold, lists, etc.)
+squads-cli mail send --to "user@example.com" --subject "Hello" --markdown "**Bold** and *italic*"
+
 # Create a draft
 squads-cli mail draft --to "user@example.com" --subject "Draft" "Content"
+
+# Create a draft with markdown formatting
+squads-cli mail draft --to "user@example.com" --subject "Draft" --markdown "**Bold title**"
 
 # Manage emails
 squads-cli mail reply <msg-id> "My reply"
