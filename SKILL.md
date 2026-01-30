@@ -102,5 +102,6 @@ Shortcut to manage your personal "Notes" chat.
 
 ## Installation / Setup
 - **Install**: `squads-cli install` (copies to `~/.local/bin/`)
-- **Update**: `squads-cli update` (pulls latest from git, rebuilds, and reinstalls)
-  - Requires repo at `~/workspace/squads-cli-repo` or set `SQUADS_CLI_REPO` env var
+- **Update**: `squads-cli update` (downloads latest release from GitHub)
+  - Automatically detects platform (Linux/macOS/Windows)
+  - Downloads pre-built binary - no build tools required

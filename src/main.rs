@@ -31,6 +31,11 @@ async fn main() -> Result<()> {
     // Initialize emoji mapping
     api::emoji::init().await?;
 
+    // Check for updates (async, non-blocking notification)
+    if let Some(new_version) = cli::update::check_for_update(&config).await {
+        cli::update::notify_update_available(&new_version);
+    }
+
     // Execute command
     match cli.command {
         Commands::Auth(cmd) => cli::auth::execute(cmd, &config).await,

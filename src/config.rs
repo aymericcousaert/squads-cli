@@ -13,6 +13,31 @@ pub struct Config {
     pub output: OutputConfig,
     #[serde(default)]
     pub api: ApiConfig,
+    #[serde(default)]
+    pub update: UpdateConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateConfig {
+    /// Enable automatic update check (default: true)
+    #[serde(default = "default_true")]
+    pub auto_check: bool,
+    /// Check interval in hours (default: 24)
+    #[serde(default = "default_check_interval")]
+    pub check_interval_hours: u64,
+}
+
+fn default_check_interval() -> u64 {
+    24
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            auto_check: true,
+            check_interval_hours: default_check_interval(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
