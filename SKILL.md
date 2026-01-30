@@ -101,5 +101,6 @@ Shortcut to manage your personal "Notes" chat.
 - **Logout**: `squads-cli auth logout`
 
 ## Installation / Setup
-If the tool is not in the path, it can be installed via:
-`squads-cli install` (copies to `~/.local/bin/`)
+- **Install**: `squads-cli install` (copies to `~/.local/bin/`)
+- **Update**: `squads-cli update` (pulls latest from git, rebuilds, and reinstalls)
+  - Requires repo at `~/workspace/squads-cli-repo` or set `SQUADS_CLI_REPO` env var

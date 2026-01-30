@@ -1,104 +1,147 @@
 use anyhow::{bail, Context, Result};
-use std::env;
+use serde::Deserialize;
 use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
+use std::io::Write;
 
 use super::output::print_success;
 
-const DEFAULT_REPO_PATH: &str = "workspace/squads-cli-repo";
+const GITHUB_REPO: &str = "aymericcousaert/squads-cli";
 
-fn find_repo_path() -> Result<PathBuf> {
-    // Check SQUADS_CLI_REPO env var first
-    if let Ok(path) = env::var("SQUADS_CLI_REPO") {
-        let path = PathBuf::from(path);
-        if path.exists() && path.join(".git").exists() {
-            return Ok(path);
-        }
-    }
-
-    // Try default path relative to home
-    let home = directories::BaseDirs::new()
-        .context("Could not find home directory")?
-        .home_dir()
-        .to_path_buf();
-
-    let default_path = home.join(DEFAULT_REPO_PATH);
-    if default_path.exists() && default_path.join(".git").exists() {
-        return Ok(default_path);
-    }
-
-    bail!(
-        "Could not find squads-cli repo. Set SQUADS_CLI_REPO environment variable or clone to ~/{}",
-        DEFAULT_REPO_PATH
-    )
+#[derive(Debug, Deserialize)]
+struct Release {
+    tag_name: String,
+    assets: Vec<Asset>,
 }
 
-pub fn execute() -> Result<()> {
-    let repo_path = find_repo_path()?;
-    println!("Found repo at: {:?}", repo_path);
+#[derive(Debug, Deserialize)]
+struct Asset {
+    name: String,
+    browser_download_url: String,
+}
 
-    // 1. Git pull
-    println!("\n📥 Pulling latest changes...");
-    let pull_status = Command::new("git")
-        .current_dir(&repo_path)
-        .args(["pull"])
-        .status()
-        .context("Failed to run git pull")?;
+fn get_asset_name() -> &'static str {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    return "squads-cli-linux-amd64";
 
-    if !pull_status.success() {
-        bail!("git pull failed");
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    return "squads-cli-macos-amd64";
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    return "squads-cli-macos-arm64";
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    return "squads-cli-windows-amd64.exe";
+
+    #[cfg(not(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "windows", target_arch = "x86_64"),
+    )))]
+    return "unsupported";
+}
+
+fn get_current_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+pub async fn execute() -> Result<()> {
+    let asset_name = get_asset_name();
+    if asset_name == "unsupported" {
+        bail!("Unsupported platform. Please build from source.");
     }
 
-    // 2. Build with cargo
-    println!("\n🔨 Building release...");
-    let build_status = Command::new("cargo")
-        .current_dir(&repo_path)
-        .args(["build", "--release"])
-        .status()
-        .context("Failed to run cargo build")?;
+    println!("🔍 Checking for updates...");
 
-    if !build_status.success() {
-        bail!("cargo build failed");
+    // Fetch latest release from GitHub
+    let client = reqwest::Client::new();
+    let release: Release = client
+        .get(format!(
+            "https://api.github.com/repos/{}/releases/latest",
+            GITHUB_REPO
+        ))
+        .header("User-Agent", "squads-cli")
+        .send()
+        .await
+        .context("Failed to fetch release info")?
+        .json()
+        .await
+        .context("Failed to parse release info")?;
+
+    let current_version = format!("v{}", get_current_version());
+    println!("Current version: {}", current_version);
+    println!("Latest version:  {}", release.tag_name);
+
+    if release.tag_name == current_version {
+        print_success("Already up to date!");
+        return Ok(());
     }
 
-    // 3. Copy to ~/.local/bin
+    // Find the right asset for this platform
+    let asset = release
+        .assets
+        .iter()
+        .find(|a| a.name == asset_name)
+        .context(format!(
+            "No binary found for this platform ({})",
+            asset_name
+        ))?;
+
+    println!("\n📥 Downloading {}...", asset.name);
+
+    // Download the binary
+    let response = client
+        .get(&asset.browser_download_url)
+        .header("User-Agent", "squads-cli")
+        .send()
+        .await
+        .context("Failed to download binary")?;
+
+    let bytes = response.bytes().await.context("Failed to read binary")?;
+
+    // Determine destination
     let home = directories::BaseDirs::new()
         .context("Could not find home directory")?
         .home_dir()
         .to_path_buf();
     let bin_dir = home.join(".local").join("bin");
-    let dest = bin_dir.join("squads-cli");
-    let source = repo_path.join("target").join("release").join("squads-cli");
 
+    #[cfg(windows)]
+    let dest = bin_dir.join("squads-cli.exe");
+    #[cfg(not(windows))]
+    let dest = bin_dir.join("squads-cli");
+
+    // Create directory if needed
     if !bin_dir.exists() {
         fs::create_dir_all(&bin_dir).context("Failed to create ~/.local/bin directory")?;
     }
 
-    if dest.exists() {
-        fs::remove_file(&dest).context("Failed to remove existing binary")?;
+    // Write to temp file first, then rename (atomic on most systems)
+    let temp_dest = dest.with_extension("tmp");
+    {
+        let mut file = fs::File::create(&temp_dest).context("Failed to create temp file")?;
+        file.write_all(&bytes).context("Failed to write binary")?;
     }
 
-    println!("\n📦 Installing to {:?}...", dest);
-    fs::copy(&source, &dest).context("Failed to copy binary")?;
-
-    // Ensure executable on Unix
+    // Set executable permission on Unix
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&dest)?.permissions();
+        let mut perms = fs::metadata(&temp_dest)?.permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&dest, perms)?;
+        fs::set_permissions(&temp_dest, perms)?;
     }
 
-    // Get new version
-    let version_output = Command::new(&dest)
-        .arg("--version")
-        .output()
-        .context("Failed to get version")?;
-    let version = String::from_utf8_lossy(&version_output.stdout);
+    // Remove old binary and rename temp to final
+    if dest.exists() {
+        fs::remove_file(&dest).context("Failed to remove old binary")?;
+    }
+    fs::rename(&temp_dest, &dest).context("Failed to install binary")?;
 
-    print_success(&format!("Updated to {}", version.trim()));
+    print_success(&format!(
+        "Updated to {} (installed at {:?})",
+        release.tag_name, dest
+    ));
 
     Ok(())
 }

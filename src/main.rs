@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
         Commands::Watch(cmd) => cli::watch::execute(cmd, &config).await,
         Commands::Completions(cmd) => cli::completions::execute(cmd),
         Commands::Install => cli::install::execute(),
-        Commands::Update => cli::update::execute(),
+        Commands::Update => cli::update::execute().await,
         #[cfg(feature = "tui")]
         Commands::Tui => tui::run(&config).await,
     }
