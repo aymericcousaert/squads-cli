@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 use std::env;
 use std::fs;
 
-use super::output::{print_success, print_warning};
+use super::output::print_success;
+
+#[cfg(target_os = "macos")]
+use super::output::print_warning;
 
 pub fn execute() -> Result<()> {
     // 1. Get current executable path

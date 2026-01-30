@@ -10,6 +10,7 @@ pub mod notes;
 pub mod output;
 pub mod search;
 pub mod teams;
+pub mod update;
 pub mod users;
 pub mod utils;
 pub mod watch;
@@ -69,6 +70,9 @@ pub enum Commands {
 
     /// Install squads-cli to ~/.local/bin
     Install,
+
+    /// Update squads-cli from git repo and reinstall
+    Update,
 
     /// Interactive terminal UI (requires --features tui)
     #[cfg(feature = "tui")]
