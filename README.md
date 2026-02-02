@@ -260,19 +260,15 @@ squads-cli chats send "19:abc@thread.v2" "Your response here"
 
 ## Configuration
 
-Config file: `~/.config/squads-cli/config.toml`
+Optional config file: `~/.config/squads-cli/config.toml` (defaults work without it)
 
 ```toml
 [auth]
 tenant = "organizations"  # or specific tenant ID
 
-[output]
-default_format = "table"
-color = true
-
-[api]
-region = "emea"
-timeout = 30
+[update]
+auto_check = true         # check for updates on startup
+check_interval_hours = 24
 ```
 
 ## Credits

@@ -10,10 +10,6 @@ pub struct Config {
     #[serde(default)]
     pub auth: AuthConfig,
     #[serde(default)]
-    pub output: OutputConfig,
-    #[serde(default)]
-    pub api: ApiConfig,
-    #[serde(default)]
     pub update: UpdateConfig,
 }
 
@@ -29,6 +25,10 @@ pub struct UpdateConfig {
 
 fn default_check_interval() -> u64 {
     24
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for UpdateConfig {
@@ -55,60 +55,6 @@ impl Default for AuthConfig {
     fn default() -> Self {
         Self {
             tenant: default_tenant(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutputConfig {
-    /// Default output format
-    #[serde(default = "default_format")]
-    pub default_format: String,
-    /// Enable colored output
-    #[serde(default = "default_true")]
-    pub color: bool,
-}
-
-fn default_format() -> String {
-    "table".to_string()
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl Default for OutputConfig {
-    fn default() -> Self {
-        Self {
-            default_format: default_format(),
-            color: default_true(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiConfig {
-    /// API region (emea, amer, apac)
-    #[serde(default = "default_region")]
-    pub region: String,
-    /// Request timeout in seconds
-    #[serde(default = "default_timeout")]
-    pub timeout: u64,
-}
-
-fn default_region() -> String {
-    "emea".to_string()
-}
-
-fn default_timeout() -> u64 {
-    30
-}
-
-impl Default for ApiConfig {
-    fn default() -> Self {
-        Self {
-            region: default_region(),
-            timeout: default_timeout(),
         }
     }
 }
