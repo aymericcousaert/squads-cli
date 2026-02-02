@@ -63,6 +63,10 @@ squads-cli search "project" --limit 10 --format json
 # List all chats (default limit: 50)
 squads-cli chats list --limit 20
 
+# Search chats by member names or title (all words must match, any order)
+squads-cli chats list --search "john"
+squads-cli chats list --search "john alice"  # finds "John Doe & Alice Smith"
+
 # Get chat messages
 squads-cli chats messages <chat-id>
 

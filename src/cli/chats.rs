@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{self, Read};
 
 use anyhow::Result;
@@ -7,6 +8,7 @@ use tabled::Tabled;
 
 use crate::api::TeamsClient;
 use crate::config::Config;
+use crate::types::Chat;
 
 use super::output::{print_error, print_output, print_single, print_success};
 use super::utils::{html_escape, markdown_to_html, strip_html, truncate};
@@ -25,6 +27,10 @@ pub enum ChatsSubcommand {
         /// Maximum number of chats to return
         #[arg(short, long, default_value = "50")]
         limit: usize,
+
+        /// Search/filter chats by member names or title (case-insensitive, all words must match)
+        #[arg(short, long)]
+        search: Option<String>,
     },
 
     /// Show chat details
@@ -307,7 +313,7 @@ struct ReactionJson {
 
 pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -> Result<()> {
     match cmd.command {
-        ChatsSubcommand::List { limit } => list(config, limit, format).await,
+        ChatsSubcommand::List { limit, search } => list(config, limit, search, format).await,
         ChatsSubcommand::Show { chat_id } => show(config, &chat_id, format).await,
         ChatsSubcommand::Messages { chat_id, limit } => {
             messages(config, &chat_id, limit, format).await
@@ -360,27 +366,63 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
     }
 }
 
-async fn list(config: &Config, limit: usize, format: OutputFormat) -> Result<()> {
+async fn list(
+    config: &Config,
+    limit: usize,
+    search: Option<String>,
+    format: OutputFormat,
+) -> Result<()> {
     let client = TeamsClient::new(config)?;
     let details = client.get_user_details().await?;
+
+    // Get current user's ID to exclude from member names
+    let my_user_id = client.get_me().await.ok().map(|me| me.id);
+
+    // Collect unique user IDs that need name resolution
+    let mut unique_ids: Vec<String> = Vec::new();
+    for chat in &details.chats {
+        for member in &chat.members {
+            if let Some(obj_id) = &member.object_id {
+                if !unique_ids.contains(obj_id) && my_user_id.as_ref() != Some(obj_id) {
+                    unique_ids.push(obj_id.clone());
+                }
+            }
+        }
+    }
+
+    // Resolve user names (limit to first 50 to avoid too many API calls)
+    let mut user_names: HashMap<String, String> = HashMap::new();
+    for user_id in unique_ids.into_iter().take(50) {
+        if let Ok(Some(user)) = client.get_user_by_id(&user_id).await {
+            if let Some(name) = user.display_name {
+                user_names.insert(user_id, name);
+            }
+        }
+    }
+
+    // Build chat rows with resolved names
+    // Split search into words for fuzzy matching (all words must match)
+    let search_words: Option<Vec<String>> = search
+        .as_ref()
+        .map(|s| s.to_lowercase().split_whitespace().map(String::from).collect());
 
     let rows: Vec<ChatRow> = details
         .chats
         .into_iter()
-        .take(limit)
-        .map(|chat| {
-            let title = chat.title.unwrap_or_else(|| {
-                // For 1:1 chats, show member info
-                if chat.members.len() == 2 {
-                    "Direct Chat".to_string()
-                } else {
-                    format!("Group ({} members)", chat.members.len())
-                }
-            });
+        .filter_map(|chat| {
+            let title = get_chat_display_name(&chat, &user_names, my_user_id.as_ref());
 
-            ChatRow {
+            // Apply search filter if provided (all words must match)
+            if let Some(ref words) = search_words {
+                let title_lower = title.to_lowercase();
+                if !words.iter().all(|word| title_lower.contains(word)) {
+                    return None;
+                }
+            }
+
+            Some(ChatRow {
                 id: chat.id,
-                title: truncate(&title, 30),
+                title: truncate(&title, 40),
                 members: chat.members.len(),
                 unread: if chat.is_read == Some(false) {
                     "Yes".to_string()
@@ -388,12 +430,77 @@ async fn list(config: &Config, limit: usize, format: OutputFormat) -> Result<()>
                     "No".to_string()
                 },
                 chat_type: chat.chat_type.unwrap_or_else(|| "chat".to_string()),
-            }
+            })
         })
+        .take(limit)
         .collect();
 
     print_output(&rows, format);
     Ok(())
+}
+
+/// Get display name for a chat based on members (similar to TUI logic)
+fn get_chat_display_name(
+    chat: &Chat,
+    user_names: &HashMap<String, String>,
+    my_user_id: Option<&String>,
+) -> String {
+    // If chat has a meaningful title set, use it
+    if let Some(title) = &chat.title {
+        if !title.is_empty()
+            && title != "Direct Chat"
+            && title != "Group Chat"
+            && !title.starts_with("Group (")
+        {
+            return title.clone();
+        }
+    }
+
+    // Get member names, excluding myself
+    let member_names: Vec<String> = chat
+        .members
+        .iter()
+        .filter_map(|m| {
+            let obj_id = m.object_id.as_ref()?;
+            // Skip if this is me
+            if my_user_id == Some(obj_id) {
+                return None;
+            }
+            // Look up name in cache
+            user_names.get(obj_id).cloned()
+        })
+        .collect();
+
+    if !member_names.is_empty() {
+        // Join names with "&"
+        if member_names.len() <= 3 {
+            return member_names.join(" & ");
+        } else {
+            // For many members, show first 2 and count
+            return format!(
+                "{} & {} +{}",
+                member_names[0],
+                member_names[1],
+                member_names.len() - 2
+            );
+        }
+    }
+
+    // Fallback: try to get name from last message sender (if not from me)
+    if let Some(last_msg) = &chat.last_message {
+        if chat.is_last_message_from_me != Some(true) {
+            if let Some(name) = &last_msg.im_display_name {
+                return name.clone();
+            }
+        }
+    }
+
+    // Final fallback
+    if chat.is_one_on_one == Some(true) {
+        "1:1 Chat".to_string()
+    } else {
+        format!("Group ({} members)", chat.members.len())
+    }
 }
 
 async fn show(config: &Config, chat_id: &str, format: OutputFormat) -> Result<()> {

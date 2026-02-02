@@ -17,7 +17,9 @@ Search across both Mail and Calendar simultaneously.
 - **Options**: `--limit <N>`, `--format [json|table|plain]`
 
 ### 2. Teams Chats
-- **List Chats**: `squads-cli chats list` (supports `--limit <N>`)
+- **List Chats**: `squads-cli chats list` (supports `--limit <N>`, `--search "<name>"`)
+  - Search by member names or title: `squads-cli chats list --search "john"`
+  - Group chats display member names (e.g., "John Doe & Alice Smith") instead of "Group (X members)"
 - **View Messages**: `squads-cli chats messages <chat-id>` (includes reactions column)
 - **Send Message**: `squads-cli chats send <chat-id> "<content>"`
   - Support for `--markdown` and `--stdin`.
@@ -80,15 +82,16 @@ Shortcut to manage your personal "Notes" chat.
 
 1. **Structured Output**: Always use `--format json` when you need to parse results programmatically (e.g., extracting `chat-id` or `msg-id`).
 2. **Context Discovery**: Start by listing chats or mail to find relevant IDs before performing actions.
-3. **Availability Checks**: When scheduling, use `free-busy` first to find common slots.
-4. **Markdown**: **ALWAYS** use `--markdown` when your message contains formatting characters like `**bold**`, `` `code` ``, or ` ``` ` code blocks. Without this flag, these characters are sent as literal text and won't render properly in Teams or Outlook emails.
-5. **Check Presence Before Reaching Out**: Use `squads-cli users presence --user "<email>"` to check if someone is Available/Busy/Away before messaging.
-6. **Find Users by Name**: Use `squads-cli users search "John"` to find user email/ID for messaging.
-7. **Monitor Mentions**: Use `squads-cli chats mentions` or `squads-cli feed --mentions-only` to find messages that need your attention.
-8. **Access Shared Content**: Use `squads-cli chats images` and `squads-cli chats files` to list and download content shared in chats.
-9. **Monitor Reactions for Feedback**: Use `squads-cli chats messages` to see reactions summary, or `squads-cli chats reactions` for detailed info on who reacted. Reactions like thumbs up indicate approval/acknowledgment.
-10. **Writing Style**: Refer to `WRITING_STYLE.md` in this directory to understand and mimic the user's communication style (tone, vocabulary, formatting) when sending messages or replies.
-11. **Piping Files**: When needing to read file content (like .txt, .md, .csv, .json) from a chat, prefer using piping (`-o -`) to process it directly in memory rather than saving to a temporary file. Example: `squads-cli chats download-file ... -o - | cat`.
+3. **Find Chats by Person**: Use `squads-cli chats list --search "name"` to find conversations with specific people. The search matches member names and chat titles (case-insensitive). Multiple words can be used and all must match (e.g., `--search "john alice"` finds "John Doe & Alice Smith").
+4. **Availability Checks**: When scheduling, use `free-busy` first to find common slots.
+5. **Markdown**: **ALWAYS** use `--markdown` when your message contains formatting characters like `**bold**`, `` `code` ``, or ` ``` ` code blocks. Without this flag, these characters are sent as literal text and won't render properly in Teams or Outlook emails.
+6. **Check Presence Before Reaching Out**: Use `squads-cli users presence --user "<email>"` to check if someone is Available/Busy/Away before messaging.
+7. **Find Users by Name**: Use `squads-cli users search "John"` to find user email/ID for messaging.
+8. **Monitor Mentions**: Use `squads-cli chats mentions` or `squads-cli feed --mentions-only` to find messages that need your attention.
+9. **Access Shared Content**: Use `squads-cli chats images` and `squads-cli chats files` to list and download content shared in chats.
+10. **Monitor Reactions for Feedback**: Use `squads-cli chats messages` to see reactions summary, or `squads-cli chats reactions` for detailed info on who reacted. Reactions like thumbs up indicate approval/acknowledgment.
+11. **Writing Style**: Refer to `WRITING_STYLE.md` in this directory to understand and mimic the user's communication style (tone, vocabulary, formatting) when sending messages or replies.
+12. **Piping Files**: When needing to read file content (like .txt, .md, .csv, .json) from a chat, prefer using piping (`-o -`) to process it directly in memory rather than saving to a temporary file. Example: `squads-cli chats download-file ... -o - | cat`.
 
 ## Authentication
 
