@@ -402,9 +402,12 @@ async fn list(
 
     // Build chat rows with resolved names
     // Split search into words for fuzzy matching (all words must match)
-    let search_words: Option<Vec<String>> = search
-        .as_ref()
-        .map(|s| s.to_lowercase().split_whitespace().map(String::from).collect());
+    let search_words: Option<Vec<String>> = search.as_ref().map(|s| {
+        s.to_lowercase()
+            .split_whitespace()
+            .map(String::from)
+            .collect()
+    });
 
     let rows: Vec<ChatRow> = details
         .chats

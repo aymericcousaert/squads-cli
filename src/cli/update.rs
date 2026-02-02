@@ -146,8 +146,8 @@ pub async fn check_for_update(config: &Config) -> Option<String> {
 /// Notify user about available update
 pub fn notify_update_available(new_version: &str) {
     eprintln!(
-        "\n\x1b[33m⚡ Update available: {} → {}\x1b[0m",
-        format!("v{}", get_current_version()),
+        "\n\x1b[33m⚡ Update available: v{} → {}\x1b[0m",
+        get_current_version(),
         new_version
     );
     eprintln!("\x1b[33m   Run `squads-cli update` to update\x1b[0m\n");

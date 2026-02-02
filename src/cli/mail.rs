@@ -254,7 +254,12 @@ pub async fn execute(cmd: MailCommand, config: &Config, format: OutputFormat) ->
             file,
             markdown,
             html,
-        } => draft(config, &to, &subject, body, cc, stdin, file, markdown, html, format).await,
+        } => {
+            draft(
+                config, &to, &subject, body, cc, stdin, file, markdown, html, format,
+            )
+            .await
+        }
         MailSubcommand::Reply {
             message_id,
             body,
