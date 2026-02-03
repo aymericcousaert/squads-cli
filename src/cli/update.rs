@@ -84,7 +84,7 @@ fn current_timestamp() -> u64 {
 
 async fn fetch_latest_version() -> Result<Release> {
     let client = reqwest::Client::new();
-    client
+    let response = client
         .get(format!(
             "https://api.github.com/repos/{}/releases/latest",
             GITHUB_REPO
@@ -92,7 +92,21 @@ async fn fetch_latest_version() -> Result<Release> {
         .header("User-Agent", "squads-cli")
         .send()
         .await
-        .context("Failed to fetch release info")?
+        .context("Failed to fetch release info")?;
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        bail!("No releases found. The repository may not exist or has no published releases.");
+    }
+
+    if !response.status().is_success() {
+        bail!(
+            "GitHub API returned error: {} {}",
+            response.status().as_u16(),
+            response.status().canonical_reason().unwrap_or("Unknown")
+        );
+    }
+
+    response
         .json()
         .await
         .context("Failed to parse release info")
