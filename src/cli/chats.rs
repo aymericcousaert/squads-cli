@@ -51,11 +51,15 @@ pub enum ChatsSubcommand {
 
     /// Send a message to a chat
     Send {
-        /// Chat ID
-        chat_id: String,
+        /// Chat ID (or message if --to is used)
+        chat_id_or_message: Option<String>,
 
-        /// Message content
+        /// Message content (when chat_id is provided)
         message: Option<String>,
+
+        /// Send to a user by name or email (finds or creates 1:1 chat)
+        #[arg(short, long)]
+        to: Option<String>,
 
         /// Read message from stdin
         #[arg(short, long)]
@@ -319,13 +323,26 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
             messages(config, &chat_id, limit, format).await
         }
         ChatsSubcommand::Send {
-            chat_id,
+            chat_id_or_message,
             message,
+            to,
             stdin,
             file,
             markdown,
             html,
-        } => send(config, &chat_id, message, stdin, file, markdown, html).await,
+        } => {
+            send(
+                config,
+                chat_id_or_message,
+                to,
+                message,
+                stdin,
+                file,
+                markdown,
+                html,
+            )
+            .await
+        }
         ChatsSubcommand::Create { members, topic } => create(config, &members, topic, format).await,
         ChatsSubcommand::Reply {
             chat_id,
@@ -586,14 +603,22 @@ async fn messages(
 
 async fn send(
     config: &Config,
-    chat_id: &str,
+    chat_id_or_message: Option<String>,
+    to: Option<String>,
     message: Option<String>,
     stdin: bool,
     file: Option<String>,
     markdown: bool,
     html: bool,
 ) -> Result<()> {
-    let content = if let Some(msg) = message {
+    // When --to is used, the first positional arg is the message, not chat_id
+    let (chat_id, actual_message) = if to.is_some() {
+        (None, chat_id_or_message)
+    } else {
+        (chat_id_or_message, message)
+    };
+
+    let content = if let Some(msg) = actual_message {
         msg
     } else if stdin {
         let mut buffer = String::new();
@@ -613,6 +638,17 @@ async fn send(
 
     let client = TeamsClient::new(config)?;
 
+    // Resolve the chat ID
+    let resolved_chat_id = if let Some(to_query) = to {
+        // Search for user by name or email
+        resolve_user_to_chat(&client, &to_query).await?
+    } else if let Some(id) = chat_id {
+        id
+    } else {
+        print_error("Either chat_id or --to must be provided");
+        return Ok(());
+    };
+
     let html_body = if html {
         content
     } else if markdown {
@@ -621,10 +657,85 @@ async fn send(
         format!("<p>{}</p>", html_escape(&content))
     };
 
-    client.send_message(chat_id, &html_body, None).await?;
+    client
+        .send_message(&resolved_chat_id, &html_body, None)
+        .await?;
     print_success("Message sent successfully");
 
     Ok(())
+}
+
+/// Resolve a user query (name or email) to a chat ID
+async fn resolve_user_to_chat(client: &TeamsClient, query: &str) -> Result<String> {
+    // Search for users matching the query
+    let users_response = client.search_users(query, 10).await?;
+    let users = &users_response.value;
+
+    if users.is_empty() {
+        anyhow::bail!("No users found matching \"{}\"", query);
+    }
+
+    if users.len() > 1 {
+        // Check if any user is an exact email match
+        let exact_match = users.iter().find(|u| {
+            u.mail
+                .as_ref()
+                .is_some_and(|e: &String| e.eq_ignore_ascii_case(query))
+        });
+
+        if let Some(user) = exact_match {
+            return find_or_create_chat_with_user(client, &user.id).await;
+        }
+
+        // Check if any user is an exact display name match
+        let exact_name_match = users.iter().find(|u| {
+            u.display_name
+                .as_ref()
+                .is_some_and(|n: &String| n.eq_ignore_ascii_case(query))
+        });
+
+        if let Some(user) = exact_name_match {
+            return find_or_create_chat_with_user(client, &user.id).await;
+        }
+
+        // Multiple matches, show them to the user
+        eprintln!("Multiple users found matching \"{}\":", query);
+        for (i, user) in users.iter().enumerate() {
+            let name = user.display_name.as_deref().unwrap_or("Unknown");
+            let email = user.mail.as_deref().unwrap_or("no email");
+            eprintln!("  {}. {} ({})", i + 1, name, email);
+        }
+        anyhow::bail!("Please use full name or email to be more specific");
+    }
+
+    // Exactly one match
+    let user = &users[0];
+    find_or_create_chat_with_user(client, &user.id).await
+}
+
+/// Find existing 1:1 chat with a user or create a new one
+async fn find_or_create_chat_with_user(client: &TeamsClient, user_id: &str) -> Result<String> {
+    // Get all chats and look for existing 1:1 chat with this user
+    let details = client.get_user_details().await?;
+
+    for chat in &details.chats {
+        // Check if this is a 1:1 chat (2 members)
+        if chat.members.len() == 2 {
+            // Check if the target user is a member
+            let has_user = chat
+                .members
+                .iter()
+                .any(|m| m.object_id.as_ref() == Some(&user_id.to_string()));
+
+            if has_user {
+                return Ok(chat.id.clone());
+            }
+        }
+    }
+
+    // No existing chat found, create a new one
+    let new_chat = client.create_chat(vec![user_id], None).await?;
+    Ok(new_chat.id)
 }
 
 async fn create(
