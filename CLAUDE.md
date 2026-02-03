@@ -84,3 +84,24 @@ check_interval_hours = 24
 ## Feature Flags
 
 - `tui` - Enables terminal UI with ratatui/crossterm (disabled by default)
+
+## Releasing New Versions
+
+1. Bump version in `Cargo.toml`
+2. Build release binary: `cargo build --release`
+3. Commit and push changes
+4. Create GitHub release with binary:
+   ```bash
+   cp target/release/squads-cli target/release/squads-cli-linux-amd64
+   gh release create vX.Y.Z \
+     --repo aymericcousaert/squads-cli \
+     --title "vX.Y.Z" \
+     --notes "Release notes here" \
+     target/release/squads-cli-linux-amd64
+   ```
+
+The update mechanism (`squads-cli update`) fetches releases from GitHub API and downloads the appropriate binary for the user's platform. Asset naming convention:
+- `squads-cli-linux-amd64`
+- `squads-cli-macos-amd64`
+- `squads-cli-macos-arm64`
+- `squads-cli-windows-amd64.exe`
