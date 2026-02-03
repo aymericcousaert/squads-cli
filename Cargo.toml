@@ -1,6 +1,6 @@
 [package]
 name = "squads-cli"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 description = "Microsoft Teams CLI client for AI agents and terminal users"
 license = "GPL-3.0"
