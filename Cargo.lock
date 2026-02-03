@@ -3024,7 +3024,7 @@ dependencies = [
 
 [[package]]
 name = "squads-cli"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3048,7 +3048,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tabled",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite",

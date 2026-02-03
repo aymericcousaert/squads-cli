@@ -1,8 +1,8 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 use super::output::print_success;
@@ -11,15 +11,15 @@ use crate::config::Config;
 const GITHUB_REPO: &str = "aymericcousaert/squads-cli";
 
 #[derive(Debug, Deserialize)]
-struct GhRelease {
-    #[serde(rename = "tagName")]
+struct Release {
     tag_name: String,
-    assets: Vec<GhAsset>,
+    assets: Vec<Asset>,
 }
 
 #[derive(Debug, Deserialize)]
-struct GhAsset {
+struct Asset {
     name: String,
+    browser_download_url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -82,31 +82,34 @@ fn current_timestamp() -> u64 {
         .as_secs()
 }
 
-fn fetch_latest_version() -> Result<GhRelease> {
-    let output = Command::new("gh")
-        .args([
-            "release",
-            "view",
-            "--repo",
-            GITHUB_REPO,
-            "--json",
-            "tagName,assets",
-        ])
-        .output()
-        .context("Failed to run gh CLI. Is it installed?")?;
+async fn fetch_latest_release() -> Result<Release> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!(
+            "https://api.github.com/repos/{}/releases/latest",
+            GITHUB_REPO
+        ))
+        .header("User-Agent", "squads-cli")
+        .send()
+        .await
+        .context("Failed to fetch release info")?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("release not found") || stderr.contains("no releases") {
-            bail!("No releases found for {}", GITHUB_REPO);
-        }
-        if stderr.contains("Could not resolve") || stderr.contains("not found") {
-            bail!("Repository {} not found or not accessible", GITHUB_REPO);
-        }
-        bail!("gh release view failed: {}", stderr.trim());
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        bail!("No releases found. The repository may not exist or has no published releases.");
     }
 
-    serde_json::from_slice(&output.stdout).context("Failed to parse release info from gh")
+    if !response.status().is_success() {
+        bail!(
+            "GitHub API returned error: {} {}",
+            response.status().as_u16(),
+            response.status().canonical_reason().unwrap_or("Unknown")
+        );
+    }
+
+    response
+        .json()
+        .await
+        .context("Failed to parse release info")
 }
 
 /// Check for updates automatically (called on startup)
@@ -137,8 +140,8 @@ pub async fn check_for_update(config: &Config) -> Option<String> {
         }
     }
 
-    // Fetch latest version (silently fail if gh not available or network issues)
-    let release = fetch_latest_version().ok()?;
+    // Fetch latest version (silently fail if network issues)
+    let release = fetch_latest_release().await.ok()?;
 
     // Update cache
     let cache = UpdateCache {
@@ -173,7 +176,7 @@ pub async fn execute() -> Result<()> {
 
     println!("🔍 Checking for updates...");
 
-    let release = fetch_latest_version()?;
+    let release = fetch_latest_release().await?;
 
     let current_version = format!("v{}", get_current_version());
     println!("Current version: {}", current_version);
@@ -185,7 +188,7 @@ pub async fn execute() -> Result<()> {
     }
 
     // Find the right asset for this platform
-    let _asset = release
+    let asset = release
         .assets
         .iter()
         .find(|a| a.name == asset_name)
@@ -193,6 +196,19 @@ pub async fn execute() -> Result<()> {
             "No binary found for this platform ({})",
             asset_name
         ))?;
+
+    println!("\n📥 Downloading {}...", asset.name);
+
+    // Download the binary
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&asset.browser_download_url)
+        .header("User-Agent", "squads-cli")
+        .send()
+        .await
+        .context("Failed to download binary")?;
+
+    let bytes = response.bytes().await.context("Failed to read binary")?;
 
     // Determine destination
     let home = directories::BaseDirs::new()
@@ -211,49 +227,27 @@ pub async fn execute() -> Result<()> {
         fs::create_dir_all(&bin_dir).context("Failed to create ~/.local/bin directory")?;
     }
 
-    println!("\n📥 Downloading {}...", asset_name);
-
-    // Download using gh CLI (handles authentication for private repos)
-    let temp_dir = tempfile::tempdir().context("Failed to create temp directory")?;
-    let download_output = Command::new("gh")
-        .args([
-            "release",
-            "download",
-            &release.tag_name,
-            "--repo",
-            GITHUB_REPO,
-            "--pattern",
-            asset_name,
-            "--dir",
-            temp_dir.path().to_str().unwrap(),
-        ])
-        .output()
-        .context("Failed to run gh release download")?;
-
-    if !download_output.status.success() {
-        let stderr = String::from_utf8_lossy(&download_output.stderr);
-        bail!("Failed to download release: {}", stderr.trim());
-    }
-
-    let downloaded_file = temp_dir.path().join(asset_name);
-    if !downloaded_file.exists() {
-        bail!("Downloaded file not found");
+    // Write to temp file first, then rename (atomic on most systems)
+    let temp_dest = dest.with_extension("tmp");
+    {
+        let mut file = fs::File::create(&temp_dest).context("Failed to create temp file")?;
+        file.write_all(&bytes).context("Failed to write binary")?;
     }
 
     // Set executable permission on Unix
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&downloaded_file)?.permissions();
+        let mut perms = fs::metadata(&temp_dest)?.permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&downloaded_file, perms)?;
+        fs::set_permissions(&temp_dest, perms)?;
     }
 
-    // Remove old binary and move new one
+    // Remove old binary and rename temp to final
     if dest.exists() {
         fs::remove_file(&dest).context("Failed to remove old binary")?;
     }
-    fs::copy(&downloaded_file, &dest).context("Failed to install binary")?;
+    fs::rename(&temp_dest, &dest).context("Failed to install binary")?;
 
     // Update cache
     let cache = UpdateCache {
