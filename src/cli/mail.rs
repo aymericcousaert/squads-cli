@@ -137,6 +137,18 @@ pub enum MailSubcommand {
         /// BCC recipients, comma-separated
         #[arg(short, long)]
         bcc: Option<String>,
+
+        /// Create as draft instead of sending
+        #[arg(long)]
+        draft: bool,
+
+        /// Treat body as Markdown and convert to HTML
+        #[arg(short, long)]
+        markdown: bool,
+
+        /// Send raw HTML without escaping
+        #[arg(long)]
+        html: bool,
     },
 
     /// Forward an email
@@ -266,7 +278,24 @@ pub async fn execute(cmd: MailCommand, config: &Config, format: OutputFormat) ->
             all,
             cc,
             bcc,
-        } => reply(config, &message_id, &body, all, cc, bcc).await,
+            draft,
+            markdown,
+            html,
+        } => {
+            reply(
+                config,
+                &message_id,
+                &body,
+                all,
+                cc,
+                bcc,
+                draft,
+                markdown,
+                html,
+                format,
+            )
+            .await
+        }
         MailSubcommand::Forward {
             message_id,
             to,
@@ -583,8 +612,21 @@ async fn reply(
     reply_all: bool,
     cc: Option<String>,
     bcc: Option<String>,
+    draft: bool,
+    markdown: bool,
+    html: bool,
+    format: OutputFormat,
 ) -> Result<()> {
     let client = TeamsClient::new(config)?;
+
+    // Convert content to HTML if markdown or html flag is set
+    let (final_body, content_type) = if html {
+        (body.to_string(), "HTML")
+    } else if markdown {
+        (markdown_to_html(body), "HTML")
+    } else {
+        (body.to_string(), "Text")
+    };
 
     // Parse CC recipients
     let cc_list: Option<Vec<String>> = cc
@@ -602,14 +644,42 @@ async fn reply(
         .as_ref()
         .map(|v| v.iter().map(|s| s.as_str()).collect());
 
-    client
-        .reply_mail(message_id, body, reply_all, cc_refs, bcc_refs)
-        .await?;
+    if draft {
+        let reply_draft = client
+            .create_reply_draft(
+                message_id,
+                &final_body,
+                content_type,
+                reply_all,
+                cc_refs,
+                bcc_refs,
+            )
+            .await?;
 
-    if reply_all {
-        print_success("Reply sent to all recipients");
+        match format {
+            OutputFormat::Json => {
+                print_single(&reply_draft, format);
+            }
+            _ => {
+                print_success(&format!(
+                    "Reply draft created with ID: {}",
+                    reply_draft.id.as_deref().unwrap_or_default()
+                ));
+                if let Some(link) = reply_draft.web_link {
+                    println!("Open in Outlook: {}", link);
+                }
+            }
+        }
     } else {
-        print_success("Reply sent");
+        client
+            .reply_mail(message_id, &final_body, reply_all, cc_refs, bcc_refs)
+            .await?;
+
+        if reply_all {
+            print_success("Reply sent to all recipients");
+        } else {
+            print_success("Reply sent");
+        }
     }
     Ok(())
 }

@@ -21,7 +21,13 @@ Search across both Mail and Calendar simultaneously.
   - Search by member names or title: `squads-cli chats list --search "john"`
   - Group chats display member names (e.g., "John Doe & Alice Smith") instead of "Group (X members)"
 - **View Messages**: `squads-cli chats messages <chat-id>` (includes reactions column)
-- **Send Message**: `squads-cli chats send <chat-id> "<content>"`
+- **Send Message**: `squads-cli chats send <chat-id> "<content>"` or `squads-cli chats send --to <user> "<content>"`
+  - **Direct to user**: Use `--to <name or email>` to send without knowing the chat ID:
+    - `squads-cli chats send --to noewen "Hello!"` (by first name)
+    - `squads-cli chats send --to "Noéwen Boisnard" "Hello!"` (by full name)
+    - `squads-cli chats send --to john.doe@company.com "Hello!"` (by email)
+  - Automatically finds existing 1:1 chat or creates a new one
+  - If multiple users match, shows them and asks for more specific name/email
   - Support for `--markdown` and `--stdin`.
 - **Reply**: `squads-cli chats reply <chat-id> --message-id <msg-id> "<content>"`
   - Support for `--markdown`.
@@ -81,17 +87,18 @@ Shortcut to manage your personal "Notes" chat.
 ## Best Practices for Agents
 
 1. **Structured Output**: Always use `--format json` when you need to parse results programmatically (e.g., extracting `chat-id` or `msg-id`).
-2. **Context Discovery**: Start by listing chats or mail to find relevant IDs before performing actions.
-3. **Find Chats by Person**: Use `squads-cli chats list --search "name"` to find conversations with specific people. The search matches member names and chat titles (case-insensitive). Multiple words can be used and all must match (e.g., `--search "john alice"` finds "John Doe & Alice Smith").
-4. **Availability Checks**: When scheduling, use `free-busy` first to find common slots.
-5. **Markdown**: **ALWAYS** use `--markdown` when your message contains formatting characters like `**bold**`, `` `code` ``, or ` ``` ` code blocks. Without this flag, these characters are sent as literal text and won't render properly in Teams or Outlook emails.
-6. **Check Presence Before Reaching Out**: Use `squads-cli users presence --user "<email>"` to check if someone is Available/Busy/Away before messaging.
-7. **Find Users by Name**: Use `squads-cli users search "John"` to find user email/ID for messaging.
-8. **Monitor Mentions**: Use `squads-cli chats mentions` or `squads-cli feed --mentions-only` to find messages that need your attention.
-9. **Access Shared Content**: Use `squads-cli chats images` and `squads-cli chats files` to list and download content shared in chats.
-10. **Monitor Reactions for Feedback**: Use `squads-cli chats messages` to see reactions summary, or `squads-cli chats reactions` for detailed info on who reacted. Reactions like thumbs up indicate approval/acknowledgment.
-11. **Writing Style**: Refer to `WRITING_STYLE.md` in this directory to understand and mimic the user's communication style (tone, vocabulary, formatting) when sending messages or replies.
-12. **Piping Files**: When needing to read file content (like .txt, .md, .csv, .json) from a chat, prefer using piping (`-o -`) to process it directly in memory rather than saving to a temporary file. Example: `squads-cli chats download-file ... -o - | cat`.
+2. **Quick Message to Colleague**: Use `squads-cli chats send --to <name> "<message>"` to send a message directly by name or email - no need to find the chat ID first. This is the fastest way to message someone.
+3. **Context Discovery**: When you need to browse conversations or find specific chats, use `squads-cli chats list`.
+4. **Find Chats by Person**: Use `squads-cli chats list --search "name"` to find conversations with specific people. The search matches member names and chat titles (case-insensitive). Multiple words can be used and all must match (e.g., `--search "john alice"` finds "John Doe & Alice Smith").
+5. **Availability Checks**: When scheduling, use `free-busy` first to find common slots.
+6. **Markdown**: **ALWAYS** use `--markdown` when your message contains formatting characters like `**bold**`, `` `code` ``, or ` ``` ` code blocks. Without this flag, these characters are sent as literal text and won't render properly in Teams or Outlook emails.
+7. **Check Presence Before Reaching Out**: Use `squads-cli users presence --user "<email>"` to check if someone is Available/Busy/Away before messaging.
+8. **Find Users by Name**: Use `squads-cli users search "John"` to find user email/ID for messaging.
+9. **Monitor Mentions**: Use `squads-cli chats mentions` or `squads-cli feed --mentions-only` to find messages that need your attention.
+10. **Access Shared Content**: Use `squads-cli chats images` and `squads-cli chats files` to list and download content shared in chats.
+11. **Monitor Reactions for Feedback**: Use `squads-cli chats messages` to see reactions summary, or `squads-cli chats reactions` for detailed info on who reacted. Reactions like thumbs up indicate approval/acknowledgment.
+12. **Writing Style**: Refer to `WRITING_STYLE.md` in this directory to understand and mimic the user's communication style (tone, vocabulary, formatting) when sending messages or replies.
+13. **Piping Files**: When needing to read file content (like .txt, .md, .csv, .json) from a chat, prefer using piping (`-o -`) to process it directly in memory rather than saving to a temporary file. Example: `squads-cli chats download-file ... -o - | cat`.
 
 ## Authentication
 
@@ -108,3 +115,6 @@ Shortcut to manage your personal "Notes" chat.
 - **Update**: `squads-cli update` (downloads latest release from GitHub)
   - Automatically detects platform (Linux/macOS/Windows)
   - Downloads pre-built binary - no build tools required
+- **Auto-update**: Checks for updates automatically once per day
+  - Notifies if new version available
+  - Disable with `SQUADS_CLI_NO_UPDATE=1` or in config: `update.auto_check = false`
