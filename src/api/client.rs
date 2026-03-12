@@ -1588,6 +1588,104 @@ impl TeamsClient {
         }
     }
 
+    /// Create a draft reply to an email
+    pub async fn create_reply_draft(
+        &self,
+        message_id: &str,
+        body: &str,
+        content_type: &str,
+        reply_all: bool,
+        cc: Option<Vec<&str>>,
+        bcc: Option<Vec<&str>>,
+    ) -> Result<MailMessage> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let endpoint = if reply_all {
+            "createReplyAll"
+        } else {
+            "createReply"
+        };
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/messages/{}/{}",
+            message_id, endpoint
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        // Build CC recipients if provided
+        let cc_recipients: Option<Vec<Recipient>> = cc.map(|emails| {
+            emails
+                .iter()
+                .map(|email| Recipient {
+                    email_address: EmailAddress {
+                        address: email.to_string(),
+                        name: None,
+                    },
+                })
+                .collect()
+        });
+
+        // Build BCC recipients if provided
+        let bcc_recipients: Option<Vec<Recipient>> = bcc.map(|emails| {
+            emails
+                .iter()
+                .map(|email| Recipient {
+                    email_address: EmailAddress {
+                        address: email.to_string(),
+                        name: None,
+                    },
+                })
+                .collect()
+        });
+
+        // Build the message object for the draft reply
+        let mut message = serde_json::json!({
+            "body": {
+                "contentType": content_type,
+                "content": body
+            }
+        });
+
+        if let Some(cc) = cc_recipients {
+            message["ccRecipients"] = serde_json::json!(cc);
+        }
+        if let Some(bcc) = bcc_recipients {
+            message["bccRecipients"] = serde_json::json!(bcc);
+        }
+
+        let request = serde_json::json!({
+            "message": message
+        });
+
+        let res = self
+            .http
+            .post(&url)
+            .headers(headers)
+            .body(serde_json::to_string(&request)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() {
+            let draft: MailMessage = res.json().await?;
+            Ok(draft)
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!(
+                "Failed to create reply draft: {} - {}",
+                status,
+                body
+            ))
+        }
+    }
+
     /// Forward an email
     pub async fn forward_mail(
         &self,
