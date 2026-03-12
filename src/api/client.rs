@@ -2495,15 +2495,16 @@ impl TeamsClient {
         range: Option<&str>,
     ) -> Result<ExcelRange> {
         let token = self.get_token(SCOPE_GRAPH).await?;
-        let encoded_sheet = urlencoding::encode(sheet);
+        // OData path segments use literal values with single quotes escaped as ''
+        let escaped_sheet = sheet.replace('\'', "''");
         let url = match range {
             Some(r) => format!(
                 "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets('{}')/range(address='{}')",
-                drive_id, item_id, encoded_sheet, urlencoding::encode(r)
+                drive_id, item_id, escaped_sheet, r
             ),
             None => format!(
                 "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets('{}')/usedRange",
-                drive_id, item_id, encoded_sheet
+                drive_id, item_id, escaped_sheet
             ),
         };
         let headers = self.graph_headers(&token)?;
@@ -2529,9 +2530,10 @@ impl TeamsClient {
         values: Vec<Vec<serde_json::Value>>,
     ) -> Result<ExcelRange> {
         let token = self.get_token(SCOPE_GRAPH).await?;
+        let escaped_sheet = sheet.replace('\'', "''");
         let url = format!(
             "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets('{}')/range(address='{}')",
-            drive_id, item_id, urlencoding::encode(sheet), urlencoding::encode(range)
+            drive_id, item_id, escaped_sheet, range
         );
         let headers = self.graph_json_headers(&token)?;
         let body = serde_json::to_string(&UpdateRangeRequest { values })?;
@@ -2589,7 +2591,7 @@ impl TeamsClient {
         let token = self.get_token(SCOPE_GRAPH).await?;
         let url = format!(
             "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/tables('{}')/rows/add",
-            drive_id, item_id, urlencoding::encode(table)
+            drive_id, item_id, table.replace('\'', "''")
         );
         let headers = self.graph_json_headers(&token)?;
         let body = serde_json::to_string(&AddTableRowsRequest { values })?;

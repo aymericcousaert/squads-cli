@@ -7,7 +7,7 @@ use crate::api::TeamsClient;
 use crate::config::Config;
 
 use super::output::{print_output, print_single, print_success};
-use super::utils::truncate;
+use super::utils::{format_size, truncate};
 use super::OutputFormat;
 
 #[derive(Args, Debug)]
@@ -18,9 +18,10 @@ pub struct SheetsCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum SheetsSubcommand {
-    /// Search SharePoint sites
+    /// Search SharePoint sites (use '*' to list all accessible sites)
     Sites {
-        /// Search query
+        /// Search query (default: '*' for all sites)
+        #[arg(default_value = "*")]
         query: String,
     },
 
@@ -280,22 +281,6 @@ async fn drives(config: &Config, site_id: &str, format: OutputFormat) -> Result<
     Ok(())
 }
 
-fn format_size(bytes: i64) -> String {
-    const KB: i64 = 1024;
-    const MB: i64 = KB * 1024;
-    const GB: i64 = MB * 1024;
-
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
 fn drive_items_to_rows(items: Vec<crate::types::DriveItem>) -> Vec<FileRow> {
     items
         .into_iter()
@@ -459,6 +444,10 @@ async fn write(
 
     if values.is_empty() {
         return Err(anyhow!("Values cannot be empty"));
+    }
+    let col_count = values[0].len();
+    if values.iter().any(|row| row.len() != col_count) {
+        return Err(anyhow!("All rows must have the same number of columns"));
     }
 
     let client = TeamsClient::new(config)?;
