@@ -1590,6 +1590,9 @@ impl TeamsClient {
     }
 
     /// Create a draft reply to an email
+    ///
+    /// Two-step process: first create the draft reply (which includes the quoted
+    /// original message), then PATCH the draft body to prepend the reply content.
     pub async fn create_reply_draft(
         &self,
         message_id: &str,
@@ -1620,6 +1623,10 @@ impl TeamsClient {
             HeaderValue::from_static("application/json"),
         );
 
+        // Step 1: Create draft reply with CC/BCC but no body
+        // This gives us a draft that includes the quoted original message
+        let mut request = serde_json::json!({});
+
         // Build CC recipients if provided
         let cc_recipients: Option<Vec<Recipient>> = cc.map(|emails| {
             emails
@@ -1646,43 +1653,91 @@ impl TeamsClient {
                 .collect()
         });
 
-        // Build the message object for the draft reply
-        let mut message = serde_json::json!({
-            "body": {
-                "contentType": content_type,
-                "content": body
+        if cc_recipients.is_some() || bcc_recipients.is_some() {
+            let mut message = serde_json::json!({});
+            if let Some(cc) = cc_recipients {
+                message["ccRecipients"] = serde_json::json!(cc);
             }
-        });
-
-        if let Some(cc) = cc_recipients {
-            message["ccRecipients"] = serde_json::json!(cc);
+            if let Some(bcc) = bcc_recipients {
+                message["bccRecipients"] = serde_json::json!(bcc);
+            }
+            request["message"] = message;
         }
-        if let Some(bcc) = bcc_recipients {
-            message["bccRecipients"] = serde_json::json!(bcc);
-        }
-
-        let request = serde_json::json!({
-            "message": message
-        });
 
         let res = self
             .http
             .post(&url)
-            .headers(headers)
+            .headers(headers.clone())
             .body(serde_json::to_string(&request)?)
             .send()
             .await?;
 
-        if res.status().is_success() {
-            let draft: MailMessage = res.json().await?;
-            Ok(draft)
-        } else {
+        if !res.status().is_success() {
             let status = res.status();
-            let body = res.text().await?;
-            Err(anyhow!(
+            let err_body = res.text().await?;
+            return Err(anyhow!(
                 "Failed to create reply draft: {} - {}",
                 status,
-                body
+                err_body
+            ));
+        }
+
+        let draft: MailMessage = res.json().await?;
+        let draft_id = draft
+            .id
+            .as_deref()
+            .ok_or_else(|| anyhow!("Draft reply created but no ID returned"))?;
+
+        // Step 2: Prepend reply content to the draft body (which has the quoted original)
+        let original_body = draft
+            .body
+            .as_ref()
+            .map(|b| b.content.as_str())
+            .unwrap_or("");
+
+        let reply_html = if content_type == "HTML" {
+            body.to_string()
+        } else {
+            // Convert plain text to HTML
+            body.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('\n', "<br>\n")
+        };
+
+        // Wrap reply content in Outlook-standard font, then append the quoted original
+        let combined_body = format!(
+            "<div style=\"font-family: Aptos, Calibri, sans-serif; font-size: 12pt;\">{}</div><br>\n{}",
+            reply_html, original_body
+        );
+
+        let patch_url = format!("https://graph.microsoft.com/v1.0/me/messages/{}", draft_id);
+
+        let patch_body = serde_json::json!({
+            "body": {
+                "contentType": "HTML",
+                "content": combined_body
+            }
+        });
+
+        let res = self
+            .http
+            .patch(&patch_url)
+            .headers(headers)
+            .body(serde_json::to_string(&patch_body)?)
+            .send()
+            .await?;
+
+        if res.status().is_success() {
+            let updated_draft: MailMessage = res.json().await?;
+            Ok(updated_draft)
+        } else {
+            let status = res.status();
+            let err_body = res.text().await?;
+            Err(anyhow!(
+                "Draft created but failed to update body: {} - {}",
+                status,
+                err_body
             ))
         }
     }
