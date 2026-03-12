@@ -46,6 +46,7 @@ async fn main() -> Result<()> {
         Commands::Mail(cmd) => cli::mail::execute(cmd, &config, cli.format).await,
         Commands::Notes(cmd) => cli::notes::execute(cmd, &config, cli.format).await,
         Commands::Calendar(cmd) => cli::calendar::execute(cmd, &config, cli.format).await,
+        Commands::Sheets(cmd) => cli::sheets::execute(cmd, &config, cli.format).await,
         Commands::Search(cmd) => cli::search::execute(cmd, &config, cli.format).await,
         Commands::Feed(cmd) => cli::feed::execute(cmd, &config, cli.format).await,
         Commands::Watch(cmd) => cli::watch::execute(cmd, &config).await,
