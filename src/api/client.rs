@@ -1505,6 +1505,7 @@ impl TeamsClient {
         &self,
         message_id: &str,
         body: &str,
+        content_type: &str,
         reply_all: bool,
         cc: Option<Vec<&str>>,
         bcc: Option<Vec<&str>>,
@@ -1555,7 +1556,7 @@ impl TeamsClient {
         // Build request with optional CC and BCC
         let mut message = serde_json::json!({
             "body": {
-                "contentType": "Text",
+                "contentType": content_type,
                 "content": body
             }
         });
