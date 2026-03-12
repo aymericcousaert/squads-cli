@@ -143,11 +143,11 @@ pub enum MailSubcommand {
         draft: bool,
 
         /// Treat body as Markdown and convert to HTML
-        #[arg(short, long)]
+        #[arg(short, long, conflicts_with = "html")]
         markdown: bool,
 
         /// Send raw HTML without escaping
-        #[arg(long)]
+        #[arg(long, conflicts_with = "markdown")]
         html: bool,
     },
 
@@ -672,7 +672,14 @@ async fn reply(
         }
     } else {
         client
-            .reply_mail(message_id, &final_body, reply_all, cc_refs, bcc_refs)
+            .reply_mail(
+                message_id,
+                &final_body,
+                content_type,
+                reply_all,
+                cc_refs,
+                bcc_refs,
+            )
             .await?;
 
         if reply_all {
