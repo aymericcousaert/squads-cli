@@ -4,6 +4,7 @@
 mod calendar;
 mod mail;
 mod message;
+mod sheets;
 mod team;
 mod user;
 
@@ -11,6 +12,7 @@ pub use calendar::*;
 
 pub use mail::*;
 pub use message::*;
+pub use sheets::*;
 pub use team::*;
 pub use user::*;
 

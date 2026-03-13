@@ -2500,4 +2500,261 @@ impl TeamsClient {
             "Failed to download file: URL is not a supported SharePoint/OneDrive share link"
         ))
     }
+
+    // ===== SharePoint & Excel (Sheets) API =====
+
+    /// Helper to build Graph API headers with authorization
+    fn graph_headers(&self, token: &AccessToken) -> Result<HeaderMap> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+        Ok(headers)
+    }
+
+    /// Helper to build Graph API headers with authorization and JSON content type
+    fn graph_json_headers(&self, token: &AccessToken) -> Result<HeaderMap> {
+        let mut headers = self.graph_headers(token)?;
+        headers.insert(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+        Ok(headers)
+    }
+
+    /// Search SharePoint sites
+    pub async fn search_sites(&self, query: &str) -> Result<Sites> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/sites?search={}",
+            urlencoding::encode(query)
+        );
+        let headers = self.graph_headers(&token)?;
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse sites")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to search sites: {} - {}", status, body))
+        }
+    }
+
+    /// List drives (document libraries) for a site
+    pub async fn list_drives(&self, site_id: &str) -> Result<Drives> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!("https://graph.microsoft.com/v1.0/sites/{}/drives", site_id);
+        let headers = self.graph_headers(&token)?;
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse drives")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to list drives: {} - {}", status, body))
+        }
+    }
+
+    /// List user's OneDrive root items
+    pub async fn list_my_drive_items(&self, folder_id: Option<&str>) -> Result<DriveItems> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = match folder_id {
+            Some(id) => format!(
+                "https://graph.microsoft.com/v1.0/me/drive/items/{}/children",
+                id
+            ),
+            None => "https://graph.microsoft.com/v1.0/me/drive/root/children".to_string(),
+        };
+        let headers = self.graph_headers(&token)?;
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse drive items")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to list drive items: {} - {}", status, body))
+        }
+    }
+
+    /// List items in a drive (root or folder)
+    pub async fn list_drive_items(
+        &self,
+        drive_id: &str,
+        folder_id: Option<&str>,
+    ) -> Result<DriveItems> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = match folder_id {
+            Some(id) => format!(
+                "https://graph.microsoft.com/v1.0/drives/{}/items/{}/children",
+                drive_id, id
+            ),
+            None => format!(
+                "https://graph.microsoft.com/v1.0/drives/{}/root/children",
+                drive_id
+            ),
+        };
+        let headers = self.graph_headers(&token)?;
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse drive items")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to list drive items: {} - {}", status, body))
+        }
+    }
+
+    /// List worksheets in an Excel workbook
+    pub async fn list_worksheets(&self, drive_id: &str, item_id: &str) -> Result<Worksheets> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets",
+            drive_id, item_id
+        );
+        let headers = self.graph_headers(&token)?;
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse worksheets")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to list worksheets: {} - {}", status, body))
+        }
+    }
+
+    /// Read a range from an Excel worksheet
+    pub async fn read_sheet_range(
+        &self,
+        drive_id: &str,
+        item_id: &str,
+        sheet: &str,
+        range: Option<&str>,
+    ) -> Result<ExcelRange> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        // OData path segments use literal values with single quotes escaped as ''
+        let escaped_sheet = sheet.replace('\'', "''");
+        let url = match range {
+            Some(r) => format!(
+                "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets('{}')/range(address='{}')",
+                drive_id, item_id, escaped_sheet, r.replace('\'', "''")
+            ),
+            None => format!(
+                "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets('{}')/usedRange",
+                drive_id, item_id, escaped_sheet
+            ),
+        };
+        let headers = self.graph_headers(&token)?;
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse range")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to read range: {} - {}", status, body))
+        }
+    }
+
+    /// Update a range in an Excel worksheet
+    pub async fn update_sheet_range(
+        &self,
+        drive_id: &str,
+        item_id: &str,
+        sheet: &str,
+        range: &str,
+        values: Vec<Vec<serde_json::Value>>,
+    ) -> Result<ExcelRange> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let escaped_sheet = sheet.replace('\'', "''");
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets('{}')/range(address='{}')",
+            drive_id, item_id, escaped_sheet, range.replace('\'', "''")
+        );
+        let headers = self.graph_json_headers(&token)?;
+        let body = serde_json::to_string(&UpdateRangeRequest { values })?;
+
+        let res = self
+            .http
+            .patch(&url)
+            .headers(headers)
+            .body(body)
+            .send()
+            .await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse updated range")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to update range: {} - {}", status, body))
+        }
+    }
+
+    /// List tables in an Excel workbook
+    pub async fn list_tables(&self, drive_id: &str, item_id: &str) -> Result<ExcelTables> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/tables",
+            drive_id, item_id
+        );
+        let headers = self.graph_headers(&token)?;
+        let res = self.http.get(&url).headers(headers).send().await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse tables")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to list tables: {} - {}", status, body))
+        }
+    }
+
+    /// Append rows to an Excel table
+    pub async fn append_table_rows(
+        &self,
+        drive_id: &str,
+        item_id: &str,
+        table: &str,
+        values: Vec<Vec<serde_json::Value>>,
+    ) -> Result<serde_json::Value> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url =
+            format!(
+            "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/tables('{}')/rows/add",
+            drive_id, item_id, table.replace('\'', "''")
+        );
+        let headers = self.graph_json_headers(&token)?;
+        let body = serde_json::to_string(&AddTableRowsRequest { values })?;
+
+        let res = self
+            .http
+            .post(&url)
+            .headers(headers)
+            .body(body)
+            .send()
+            .await?;
+
+        if res.status().is_success() {
+            let body = res.text().await?;
+            serde_json::from_str(&body).context("Failed to parse table row response")
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to append rows: {} - {}", status, body))
+        }
+    }
 }

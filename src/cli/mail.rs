@@ -9,7 +9,7 @@ use crate::api::TeamsClient;
 use crate::config::Config;
 
 use super::output::{print_error, print_output, print_single, print_success};
-use super::utils::{markdown_to_html, strip_html, truncate};
+use super::utils::{format_size, markdown_to_html, strip_html, truncate};
 use super::OutputFormat;
 
 #[derive(Args, Debug)]
@@ -791,19 +791,6 @@ async fn attachments(config: &Config, message_id: &str, format: OutputFormat) ->
         }
     }
     Ok(())
-}
-
-fn format_size(bytes: i64) -> String {
-    const KB: i64 = 1024;
-    const MB: i64 = KB * 1024;
-
-    if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} B", bytes)
-    }
 }
 
 async fn download(
