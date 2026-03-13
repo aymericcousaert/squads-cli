@@ -601,6 +601,7 @@ async fn messages(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send(
     config: &Config,
     chat_id_or_message: Option<String>,
