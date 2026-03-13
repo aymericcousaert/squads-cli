@@ -2642,15 +2642,21 @@ impl TeamsClient {
         range: Option<&str>,
     ) -> Result<ExcelRange> {
         let token = self.get_token(SCOPE_GRAPH).await?;
-        // OData path segments use literal values with single quotes escaped as ''
-        let escaped_sheet = sheet.replace('\'', "''");
+        // Percent-encode OData single quotes as %27 to prevent the url crate
+        // from re-interpreting special chars (like !) elsewhere in the path
+        let sheet_clean = sheet.replace('\'', "''");
+        let escaped_sheet = urlencoding::encode(&sheet_clean);
         let url = match range {
-            Some(r) => format!(
-                "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets('{}')/range(address='{}')",
-                drive_id, item_id, escaped_sheet, r.replace('\'', "''")
-            ),
+            Some(r) => {
+                let range_clean = r.replace('\'', "''");
+                let escaped_range = urlencoding::encode(&range_clean);
+                format!(
+                    "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets(%27{}%27)/range(address=%27{}%27)",
+                    drive_id, item_id, escaped_sheet, escaped_range
+                )
+            }
             None => format!(
-                "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets('{}')/usedRange",
+                "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets(%27{}%27)/usedRange",
                 drive_id, item_id, escaped_sheet
             ),
         };
@@ -2677,10 +2683,13 @@ impl TeamsClient {
         values: Vec<Vec<serde_json::Value>>,
     ) -> Result<ExcelRange> {
         let token = self.get_token(SCOPE_GRAPH).await?;
-        let escaped_sheet = sheet.replace('\'', "''");
+        let sheet_clean = sheet.replace('\'', "''");
+        let escaped_sheet = urlencoding::encode(&sheet_clean);
+        let range_clean = range.replace('\'', "''");
+        let escaped_range = urlencoding::encode(&range_clean);
         let url = format!(
-            "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets('{}')/range(address='{}')",
-            drive_id, item_id, escaped_sheet, range.replace('\'', "''")
+            "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets(%27{}%27)/range(address=%27{}%27)",
+            drive_id, item_id, escaped_sheet, escaped_range
         );
         let headers = self.graph_json_headers(&token)?;
         let body = serde_json::to_string(&UpdateRangeRequest { values })?;
@@ -2732,10 +2741,11 @@ impl TeamsClient {
         values: Vec<Vec<serde_json::Value>>,
     ) -> Result<serde_json::Value> {
         let token = self.get_token(SCOPE_GRAPH).await?;
-        let url =
-            format!(
-            "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/tables('{}')/rows/add",
-            drive_id, item_id, table.replace('\'', "''")
+        let table_clean = table.replace('\'', "''");
+        let escaped_table = urlencoding::encode(&table_clean);
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/tables(%27{}%27)/rows/add",
+            drive_id, item_id, escaped_table
         );
         let headers = self.graph_json_headers(&token)?;
         let body = serde_json::to_string(&AddTableRowsRequest { values })?;
