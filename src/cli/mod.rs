@@ -9,6 +9,7 @@ pub mod mail;
 pub mod notes;
 pub mod output;
 pub mod search;
+pub mod sheets;
 pub mod teams;
 pub mod update;
 pub mod users;
@@ -55,6 +56,9 @@ pub enum Commands {
 
     /// Outlook calendar operations
     Calendar(calendar::CalendarCommand),
+
+    /// SharePoint & Excel spreadsheet operations
+    Sheets(sheets::SheetsCommand),
 
     /// Global search across mail, teams, and calendar
     Search(search::SearchCommand),
