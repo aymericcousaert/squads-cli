@@ -330,11 +330,7 @@ async fn files(
     Ok(())
 }
 
-async fn my_files(
-    config: &Config,
-    folder_id: Option<&str>,
-    format: OutputFormat,
-) -> Result<()> {
+async fn my_files(config: &Config, folder_id: Option<&str>, format: OutputFormat) -> Result<()> {
     let client = TeamsClient::new(config)?;
     let items = client.list_my_drive_items(folder_id).await?;
 
@@ -439,8 +435,9 @@ async fn write(
     values_json: &str,
     format: OutputFormat,
 ) -> Result<()> {
-    let values: Vec<Vec<serde_json::Value>> = serde_json::from_str(values_json)
-        .context("Invalid JSON for values. Expected array of arrays, e.g. [[1,\"hello\"],[2,\"world\"]]")?;
+    let values: Vec<Vec<serde_json::Value>> = serde_json::from_str(values_json).context(
+        "Invalid JSON for values. Expected array of arrays, e.g. [[1,\"hello\"],[2,\"world\"]]",
+    )?;
 
     if values.is_empty() {
         return Err(anyhow!("Values cannot be empty"));
@@ -527,7 +524,10 @@ async fn append(
     match format {
         OutputFormat::Json => print_single(&result, format),
         _ => {
-            print_success(&format!("Appended {} row(s) to table '{}'", row_count, table));
+            print_success(&format!(
+                "Appended {} row(s) to table '{}'",
+                row_count, table
+            ));
         }
     }
     Ok(())

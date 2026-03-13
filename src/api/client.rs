@@ -2392,10 +2392,7 @@ impl TeamsClient {
     /// List drives (document libraries) for a site
     pub async fn list_drives(&self, site_id: &str) -> Result<Drives> {
         let token = self.get_token(SCOPE_GRAPH).await?;
-        let url = format!(
-            "https://graph.microsoft.com/v1.0/sites/{}/drives",
-            site_id
-        );
+        let url = format!("https://graph.microsoft.com/v1.0/sites/{}/drives", site_id);
         let headers = self.graph_headers(&token)?;
         let res = self.http.get(&url).headers(headers).send().await?;
 
@@ -2463,11 +2460,7 @@ impl TeamsClient {
     }
 
     /// List worksheets in an Excel workbook
-    pub async fn list_worksheets(
-        &self,
-        drive_id: &str,
-        item_id: &str,
-    ) -> Result<Worksheets> {
+    pub async fn list_worksheets(&self, drive_id: &str, item_id: &str) -> Result<Worksheets> {
         let token = self.get_token(SCOPE_GRAPH).await?;
         let url = format!(
             "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets",
@@ -2500,7 +2493,7 @@ impl TeamsClient {
         let url = match range {
             Some(r) => format!(
                 "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets('{}')/range(address='{}')",
-                drive_id, item_id, escaped_sheet, r
+                drive_id, item_id, escaped_sheet, r.replace('\'', "''")
             ),
             None => format!(
                 "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets('{}')/usedRange",
@@ -2533,7 +2526,7 @@ impl TeamsClient {
         let escaped_sheet = sheet.replace('\'', "''");
         let url = format!(
             "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/worksheets('{}')/range(address='{}')",
-            drive_id, item_id, escaped_sheet, range
+            drive_id, item_id, escaped_sheet, range.replace('\'', "''")
         );
         let headers = self.graph_json_headers(&token)?;
         let body = serde_json::to_string(&UpdateRangeRequest { values })?;
@@ -2557,11 +2550,7 @@ impl TeamsClient {
     }
 
     /// List tables in an Excel workbook
-    pub async fn list_tables(
-        &self,
-        drive_id: &str,
-        item_id: &str,
-    ) -> Result<ExcelTables> {
+    pub async fn list_tables(&self, drive_id: &str, item_id: &str) -> Result<ExcelTables> {
         let token = self.get_token(SCOPE_GRAPH).await?;
         let url = format!(
             "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/tables",
@@ -2589,7 +2578,8 @@ impl TeamsClient {
         values: Vec<Vec<serde_json::Value>>,
     ) -> Result<serde_json::Value> {
         let token = self.get_token(SCOPE_GRAPH).await?;
-        let url = format!(
+        let url =
+            format!(
             "https://graph.microsoft.com/v1.0/drives/{}/items/{}/workbook/tables('{}')/rows/add",
             drive_id, item_id, table.replace('\'', "''")
         );

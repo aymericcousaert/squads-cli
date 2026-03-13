@@ -80,6 +80,16 @@ fn test_teams_help() {
         .stdout(predicate::str::contains("Teams operations"));
 }
 
+/// Test sheets subcommand help
+#[test]
+fn test_sheets_help() {
+    let mut cmd = Command::cargo_bin("squads-cli").unwrap();
+    cmd.args(["sheets", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SharePoint"));
+}
+
 /// Test format flag validation
 #[test]
 fn test_format_json() {
