@@ -605,6 +605,7 @@ async fn draft(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn reply(
     config: &Config,
     message_id: &str,
