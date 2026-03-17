@@ -81,6 +81,16 @@ pub struct SendMailRequest {
     pub save_to_sent_items: bool,
 }
 
+/// File attachment for sending
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileAttachment {
+    #[serde(rename = "@odata.type")]
+    pub odata_type: String,
+    pub name: String,
+    pub content_bytes: String,
+}
+
 /// Message content for sending
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,6 +100,8 @@ pub struct SendMailMessage {
     pub to_recipients: Vec<Recipient>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cc_recipients: Option<Vec<Recipient>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<FileAttachment>>,
 }
 
 /// Request to create a draft message
@@ -101,6 +113,8 @@ pub struct CreateDraftRequest {
     pub to_recipients: Vec<Recipient>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cc_recipients: Option<Vec<Recipient>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<FileAttachment>>,
 }
 
 /// Email attachment

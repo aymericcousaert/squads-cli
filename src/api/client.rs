@@ -1307,6 +1307,7 @@ impl TeamsClient {
         body: &str,
         cc: Option<Vec<&str>>,
         content_type: &str,
+        attachments: Option<Vec<FileAttachment>>,
     ) -> Result<()> {
         let token = self.get_token(SCOPE_GRAPH).await?;
         let url = "https://graph.microsoft.com/v1.0/me/sendMail";
@@ -1352,6 +1353,7 @@ impl TeamsClient {
                 },
                 to_recipients,
                 cc_recipients,
+                attachments,
             },
             save_to_sent_items: true,
         };
@@ -1436,6 +1438,7 @@ impl TeamsClient {
         body: &str,
         cc: Option<Vec<&str>>,
         content_type: &str,
+        attachments: Option<Vec<FileAttachment>>,
     ) -> Result<MailMessage> {
         let token = self.get_token(SCOPE_GRAPH).await?;
         let url = "https://graph.microsoft.com/v1.0/me/messages";
@@ -1480,6 +1483,7 @@ impl TeamsClient {
             },
             to_recipients,
             cc_recipients,
+            attachments,
         };
 
         let res = self
