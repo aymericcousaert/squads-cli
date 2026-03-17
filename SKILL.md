@@ -45,6 +45,8 @@ Search across both Mail and Calendar simultaneously.
 - **Read**: `squads-cli mail read <msg-id>`
 - **Send/Draft**: `squads-cli mail send --to <email> --subject <sub...> "<body>"`
   - Support for `--markdown` (convert Markdown to HTML) and `--html` (raw HTML).
+  - Attach files with `--attachment <path>` (can be repeated): `squads-cli mail send --to user@co.com --subject "Report" "See attached" -a report.pdf -a data.xlsx`
+  - Works on both `mail send` and `mail draft`.
 - **Management**: `squads-cli mail mark <msg-id> --read`, `squads-cli mail delete <msg-id>`
 
 ### 4. Calendar & Availability
