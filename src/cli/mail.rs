@@ -1,16 +1,44 @@
 use std::io::{self, Read};
+use std::path::Path;
 
 use anyhow::Result;
+use base64::Engine;
 use clap::{Args, Subcommand};
 use serde::Serialize;
 use tabled::Tabled;
 
 use crate::api::TeamsClient;
 use crate::config::Config;
+use crate::types::FileAttachment;
 
 use super::output::{print_error, print_output, print_single, print_success};
 use super::utils::{format_size, markdown_to_html, strip_html, truncate};
 use super::OutputFormat;
+
+fn load_attachments(paths: &[String]) -> Result<Option<Vec<FileAttachment>>> {
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    let mut attachments = Vec::new();
+    for path_str in paths {
+        let path = Path::new(path_str);
+        if !path.exists() {
+            anyhow::bail!("Attachment not found: {}", path_str);
+        }
+        let bytes = std::fs::read(path)?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path_str.clone());
+        attachments.push(FileAttachment {
+            odata_type: "#microsoft.graph.fileAttachment".to_string(),
+            name,
+            content_bytes: encoded,
+        });
+    }
+    Ok(Some(attachments))
+}
 
 #[derive(Args, Debug)]
 pub struct MailCommand {
@@ -72,6 +100,10 @@ pub enum MailSubcommand {
         /// Send raw HTML without escaping
         #[arg(long)]
         html: bool,
+
+        /// Attach file(s) (can be specified multiple times)
+        #[arg(short, long = "attachment")]
+        attachments: Vec<String>,
     },
 
     /// Search emails
@@ -116,6 +148,10 @@ pub enum MailSubcommand {
         /// Send raw HTML without escaping
         #[arg(long)]
         html: bool,
+
+        /// Attach file(s) (can be specified multiple times)
+        #[arg(short, long = "attachment")]
+        attachments: Vec<String>,
     },
 
     /// Reply to an email
@@ -255,7 +291,22 @@ pub async fn execute(cmd: MailCommand, config: &Config, format: OutputFormat) ->
             file,
             markdown,
             html,
-        } => send(config, &to, &subject, body, cc, stdin, file, markdown, html).await,
+            attachments,
+        } => {
+            send(
+                config,
+                &to,
+                &subject,
+                body,
+                cc,
+                stdin,
+                file,
+                markdown,
+                html,
+                attachments,
+            )
+            .await
+        }
         MailSubcommand::Search { query, limit } => search(config, &query, limit, format).await,
         MailSubcommand::Draft {
             to,
@@ -266,9 +317,20 @@ pub async fn execute(cmd: MailCommand, config: &Config, format: OutputFormat) ->
             file,
             markdown,
             html,
+            attachments,
         } => {
             draft(
-                config, &to, &subject, body, cc, stdin, file, markdown, html, format,
+                config,
+                &to,
+                &subject,
+                body,
+                cc,
+                stdin,
+                file,
+                markdown,
+                html,
+                attachments,
+                format,
             )
             .await
         }
@@ -449,6 +511,7 @@ async fn send(
     file: Option<String>,
     markdown: bool,
     html: bool,
+    attachment_paths: Vec<String>,
 ) -> Result<()> {
     // Get the body content
     let content = if let Some(b) = body {
@@ -490,8 +553,17 @@ async fn send(
         .as_ref()
         .map(|v| v.iter().map(|s| s.as_str()).collect());
 
+    let attachments = load_attachments(&attachment_paths)?;
+
     client
-        .send_mail(to_list, subject, &final_body, cc_refs, content_type)
+        .send_mail(
+            to_list,
+            subject,
+            &final_body,
+            cc_refs,
+            content_type,
+            attachments,
+        )
         .await?;
     print_success("Email sent successfully");
 
@@ -539,6 +611,7 @@ async fn draft(
     file: Option<String>,
     markdown: bool,
     html: bool,
+    attachment_paths: Vec<String>,
     format: OutputFormat,
 ) -> Result<()> {
     // Get the body content
@@ -581,8 +654,17 @@ async fn draft(
         .as_ref()
         .map(|v| v.iter().map(|s| s.as_str()).collect());
 
+    let attachments = load_attachments(&attachment_paths)?;
+
     let draft = client
-        .create_draft(to_list, subject, &final_body, cc_refs, content_type)
+        .create_draft(
+            to_list,
+            subject,
+            &final_body,
+            cc_refs,
+            content_type,
+            attachments,
+        )
         .await?;
 
     match format {
