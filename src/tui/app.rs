@@ -155,7 +155,7 @@ impl App {
 
         // Look up user names (limit to first 20 to avoid too many API calls)
         self.status_message = format!("Resolving {} user names...", unique_ids.len().min(20));
-        let all_ids: Vec<String> = unique_ids.iter().cloned().collect();
+        let all_ids: Vec<String> = unique_ids.to_vec();
         for user_id in unique_ids.into_iter().take(20) {
             if let Ok(Some(user)) = self.client.get_user_by_id(&user_id).await {
                 if let Some(name) = user.display_name {

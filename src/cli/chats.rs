@@ -409,7 +409,7 @@ async fn list(
 
     // Resolve user names (limit to first 50 to avoid too many API calls)
     let mut user_names: HashMap<String, String> = HashMap::new();
-    let all_ids: Vec<String> = unique_ids.iter().cloned().collect();
+    let all_ids: Vec<String> = unique_ids.to_vec();
     for user_id in unique_ids.into_iter().take(50) {
         if let Ok(Some(user)) = client.get_user_by_id(&user_id).await {
             if let Some(name) = user.display_name {
