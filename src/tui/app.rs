@@ -155,10 +155,35 @@ impl App {
 
         // Look up user names (limit to first 20 to avoid too many API calls)
         self.status_message = format!("Resolving {} user names...", unique_ids.len().min(20));
+        let all_ids: Vec<String> = unique_ids.iter().cloned().collect();
         for user_id in unique_ids.into_iter().take(20) {
             if let Ok(Some(user)) = self.client.get_user_by_id(&user_id).await {
                 if let Some(name) = user.display_name {
                     self.user_names.insert(user_id, name);
+                }
+            }
+        }
+
+        // Fallback: resolve remaining via chat messages (cross-tenant users)
+        let unresolved: Vec<&str> = all_ids
+            .iter()
+            .filter(|id| !self.user_names.contains_key(id.as_str()))
+            .map(|s| s.as_str())
+            .collect();
+        if !unresolved.is_empty() {
+            for chat in &self.chats {
+                for member in &chat.members {
+                    if let Some(obj_id) = &member.object_id {
+                        if unresolved.contains(&obj_id.as_str()) {
+                            if let Ok(Some(name)) = self
+                                .client
+                                .resolve_name_from_messages(&chat.id, obj_id)
+                                .await
+                            {
+                                self.user_names.entry(obj_id.clone()).or_insert(name);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -213,8 +238,11 @@ impl App {
                 if self.my_user_id.as_ref() == Some(obj_id) {
                     return None;
                 }
-                // Look up name in cache
-                self.user_names.get(obj_id).cloned()
+                // Look up name in cache, then try displayName from API response
+                self.user_names
+                    .get(obj_id)
+                    .cloned()
+                    .or_else(|| m.display_name.clone())
             })
             .collect();
 

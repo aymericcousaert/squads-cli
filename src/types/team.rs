@@ -52,6 +52,7 @@ pub struct ChatMember {
     pub object_id: Option<String>,
     pub role: Option<String>,
     pub is_identity_masked: Option<bool>,
+    pub display_name: Option<String>,
 }
 
 /// Chat/conversation
