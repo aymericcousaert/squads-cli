@@ -409,10 +409,33 @@ async fn list(
 
     // Resolve user names (limit to first 50 to avoid too many API calls)
     let mut user_names: HashMap<String, String> = HashMap::new();
+    let all_ids: Vec<String> = unique_ids.iter().cloned().collect();
     for user_id in unique_ids.into_iter().take(50) {
         if let Ok(Some(user)) = client.get_user_by_id(&user_id).await {
             if let Some(name) = user.display_name {
                 user_names.insert(user_id, name);
+            }
+        }
+    }
+
+    // Fallback: resolve remaining via chat messages (cross-tenant users)
+    let unresolved: Vec<&str> = all_ids
+        .iter()
+        .filter(|id| !user_names.contains_key(id.as_str()))
+        .map(|s| s.as_str())
+        .collect();
+    if !unresolved.is_empty() {
+        for chat in &details.chats {
+            for member in &chat.members {
+                if let Some(obj_id) = &member.object_id {
+                    if unresolved.contains(&obj_id.as_str()) {
+                        if let Ok(Some(name)) =
+                            client.resolve_name_from_messages(&chat.id, obj_id).await
+                        {
+                            user_names.entry(obj_id.clone()).or_insert(name);
+                        }
+                    }
+                }
             }
         }
     }
@@ -486,8 +509,11 @@ fn get_chat_display_name(
             if my_user_id == Some(obj_id) {
                 return None;
             }
-            // Look up name in cache
-            user_names.get(obj_id).cloned()
+            // Look up name in cache, then try displayName from API response
+            user_names
+                .get(obj_id)
+                .cloned()
+                .or_else(|| m.display_name.clone())
         })
         .collect();
 

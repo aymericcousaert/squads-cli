@@ -315,6 +315,30 @@ impl TeamsClient {
         }
     }
 
+    /// Resolve an external user's display name by fetching messages from the chat.
+    /// Graph `/users/{id}` fails for cross-tenant users, but messages always
+    /// contain `imdisplayname` for the sender.
+    pub async fn resolve_name_from_messages(
+        &self,
+        chat_id: &str,
+        user_id: &str,
+    ) -> Result<Option<String>> {
+        let convs = self.get_conversations(chat_id, None).await?;
+        let mri_suffix = format!("8:orgid:{}", user_id);
+        for msg in &convs.messages {
+            if let Some(ref from) = msg.from {
+                if from.contains(&mri_suffix) {
+                    if let Some(ref name) = msg.im_display_name {
+                        if !name.is_empty() {
+                            return Ok(Some(name.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Get conversations/messages from a chat
     pub async fn get_conversations(
         &self,
