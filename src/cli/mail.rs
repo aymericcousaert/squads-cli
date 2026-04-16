@@ -426,7 +426,7 @@ async fn list(
                         .unwrap_or_else(|| "Unknown".to_string());
 
                     MailRow {
-                        id: truncate(&m.id.unwrap_or_default(), 12),
+                        id: m.id.unwrap_or_default(),
                         from: truncate(&from, 25),
                         subject: truncate(&m.subject.unwrap_or_default(), 40),
                         date: m
@@ -584,7 +584,7 @@ async fn search(config: &Config, query: &str, limit: usize, format: OutputFormat
                 .unwrap_or_else(|| "Unknown".to_string());
 
             MailRow {
-                id: truncate(&m.id.unwrap_or_default(), 12),
+                id: m.id.unwrap_or_default(),
                 from: truncate(&from, 25),
                 subject: truncate(&m.subject.unwrap_or_default(), 40),
                 date: m
