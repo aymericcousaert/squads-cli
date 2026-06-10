@@ -68,10 +68,14 @@ impl TeamsClient {
             .json()
             .await?;
 
-        let socketio = reg["socketio"]
+        let mut socketio = reg["socketio"]
             .as_str()
             .unwrap_or("https://go.trouter.teams.microsoft.com/")
             .to_string();
+        // ensure a trailing slash so `{socketio}socket.io/1/...` is well-formed
+        if !socketio.ends_with('/') {
+            socketio.push('/');
+        }
         let surl = reg["surl"]
             .as_str()
             .ok_or_else(|| anyhow!("trouter response missing surl"))?
@@ -88,7 +92,8 @@ impl TeamsClient {
                 }
             }
         }
-        let tc = urlencoding::encode(r#"{"cv":"2024.23.01.2","ua":"TeamsCDL","hr":"","v":"1.0.0"}"#);
+        let tc =
+            urlencoding::encode(r#"{"cv":"2024.23.01.2","ua":"TeamsCDL","hr":"","v":"1.0.0"}"#);
         let con_num = Utc::now().timestamp_millis();
         let ccid_q = ccid
             .as_ref()
@@ -125,7 +130,10 @@ impl TeamsClient {
             .trim_start_matches("https://")
             .trim_start_matches("http://")
             .trim_end_matches('/');
-        let ws_url = format!("wss://{}/socket.io/1/websocket/{}?{}", host, session_id, query);
+        let ws_url = format!(
+            "wss://{}/socket.io/1/websocket/{}?{}",
+            host, session_id, query
+        );
         let mut request = ws_url.into_client_request()?;
         request
             .headers_mut()
@@ -135,10 +143,17 @@ impl TeamsClient {
 
         let mut ping = tokio::time::interval(Duration::from_secs(30));
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        ping.tick().await; // consume the immediate first tick so we don't ping before auth
         let mut cmd_count: u64 = 0;
+
+        // Force a clean reconnect every few hours so tokens + the registrar
+        // subscription are refreshed on a long-lived session.
+        let max_session = tokio::time::sleep(Duration::from_secs(5 * 3600));
+        tokio::pin!(max_session);
 
         loop {
             tokio::select! {
+                _ = &mut max_session => { break; }
                 _ = ping.tick() => {
                     cmd_count += 1;
                     let f = format!("5:{}+::{{\"name\":\"ping\"}}", cmd_count);
@@ -163,17 +178,17 @@ impl TeamsClient {
                     match txt.as_bytes()[0] {
                         b'1' => {
                             // connected: authenticate over the socket, then register via HTTP
-                            let auth = json!({
-                                "name": "user.authenticate",
-                                "args": [{
-                                    "headers": {
-                                        "X-Ms-Test-User": "False",
-                                        "Authorization": format!("Bearer {}", bearer.value),
-                                        "X-MS-Migration": "True"
-                                    },
-                                    "connectparams": connectparams
-                                }]
+                            let mut auth_args = json!({
+                                "headers": {
+                                    "X-Ms-Test-User": "False",
+                                    "Authorization": format!("Bearer {}", bearer.value),
+                                    "X-MS-Migration": "True"
+                                }
                             });
+                            if !connectparams.is_null() {
+                                auth_args["connectparams"] = connectparams.clone();
+                            }
+                            let auth = json!({"name": "user.authenticate", "args": [auth_args]});
                             let _ = write.send(WsMessage::Text(format!("5:::{}", auth).into())).await;
                             if let Err(e) = self.trouter_register(&skype.value, &bearer.value, &surl, &epid).await {
                                 tracing::warn!("registrar failed: {e}");
@@ -262,22 +277,37 @@ fn after_nth_colon(s: &str, n: usize) -> Option<&str> {
     None
 }
 
-/// Decode a Trouter request `body` (string) into JSON, handling optional gzip+base64.
+/// Decode a Trouter request `body` (string) into JSON, handling optional gzip+base64
+/// at the envelope level and the nested `cp` (gzip+base64) / `gp` (base64) payloads.
 fn decode_body(req: &Value) -> Option<Value> {
     let body = req["body"].as_str()?;
     let gzip = req["headers"]
         .get("X-Microsoft-Skype-Content-Encoding")
         .and_then(|v| v.as_str())
         == Some("gzip");
-    if gzip {
-        let raw = B64.decode(body).ok()?;
-        let mut gz = flate2::read::GzDecoder::new(&raw[..]);
-        let mut out = String::new();
-        gz.read_to_string(&mut out).ok()?;
-        serde_json::from_str(&out).ok()
+    let outer: Value = if gzip {
+        serde_json::from_str(&gunzip_b64(body)?).ok()?
     } else {
-        serde_json::from_str(body).ok()
+        serde_json::from_str(body).ok()?
+    };
+    // The real payload is sometimes wrapped: `cp` = gzip+base64, `gp` = base64.
+    if let Some(cp) = outer.get("cp").and_then(|v| v.as_str()) {
+        return serde_json::from_str(&gunzip_b64(cp)?).ok();
     }
+    if let Some(gp) = outer.get("gp").and_then(|v| v.as_str()) {
+        let raw = B64.decode(gp).ok()?;
+        return serde_json::from_slice(&raw).ok();
+    }
+    Some(outer)
+}
+
+/// base64-decode then gunzip to a UTF-8 string.
+fn gunzip_b64(s: &str) -> Option<String> {
+    let raw = B64.decode(s).ok()?;
+    let mut gz = flate2::read::GzDecoder::new(&raw[..]);
+    let mut out = String::new();
+    gz.read_to_string(&mut out).ok()?;
+    Some(out)
 }
 
 /// Extract a TrouterMessage from a request envelope if it's a new chat message.
