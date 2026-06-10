@@ -45,7 +45,7 @@ fn strip_html_simple(s: &str) -> String {
 pub struct TeamsClient {
     tokens: Arc<RwLock<TokenStore>>,
     tenant: String,
-    http: Client,
+    pub(crate) http: Client,
     cache: Cache,
 }
 
