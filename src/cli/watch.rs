@@ -4,7 +4,7 @@ use colored::Colorize;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::api::TeamsClient;
+use crate::api::{TeamsClient, TrouterMessage};
 use crate::cli::utils::{strip_html, truncate};
 use crate::config::Config;
 
@@ -29,6 +29,14 @@ pub struct WatchCommand {
     /// Specific chat ID to watch (can be repeated)
     #[arg(long)]
     pub chat: Vec<String>,
+
+    /// Use real-time push (Trouter websocket) instead of polling. Chats only.
+    #[arg(short, long)]
+    pub push: bool,
+
+    /// Emit each new message as a JSON line (for scripts / agents). Implies --push.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
@@ -44,6 +52,11 @@ pub enum WatchSource {
 
 pub async fn execute(cmd: WatchCommand, config: &Config) -> Result<()> {
     let client = TeamsClient::new(config)?;
+
+    // --json is a push-only output mode; imply push so it never silently no-ops.
+    if cmd.push || cmd.json {
+        return watch_push(&client, &cmd).await;
+    }
 
     // Get current user profile to avoid notifying on own messages
     let me = client.get_me().await.ok();
@@ -255,6 +268,102 @@ async fn check_new_emails(client: &TeamsClient, seen: &mut HashSet<String>, cmd:
                 "mail",
             );
         }
+    }
+}
+
+/// Real-time push watch via the Trouter websocket, with auto-reconnect.
+async fn watch_push(client: &TeamsClient, cmd: &WatchCommand) -> Result<()> {
+    use std::io::Write;
+
+    let me = client.get_me().await.ok();
+    let my_mri = me.as_ref().map(|p| format!("8:orgid:{}", p.id));
+
+    if matches!(cmd.source, WatchSource::Mail) {
+        eprintln!("note: --push is chats-only; --source mail is ignored");
+    }
+
+    // Dedup across the session: Trouter redelivers un-acked events and replays recent
+    // messages on every reconnect, so without this the same message fires twice.
+    let mut seen: HashSet<String> = HashSet::new();
+
+    if !cmd.json {
+        println!(
+            "{}",
+            "Starting push watch (Trouter real-time)...".cyan().bold()
+        );
+        if cmd.notify {
+            println!("Desktop notifications: {}", "enabled".green());
+        }
+        println!("Connected. Waiting for messages. Press Ctrl+C to stop.");
+        println!();
+    }
+
+    let mut backoff = 2u64;
+    loop {
+        let res = client
+            .trouter_listen(|m: TrouterMessage| {
+                // skip our own messages
+                if let Some(mri) = &my_mri {
+                    if &m.from_mri == mri {
+                        return;
+                    }
+                }
+                // optional chat filter
+                if !cmd.chat.is_empty() && !cmd.chat.contains(&m.chat_id) {
+                    return;
+                }
+                // skip messages we've already delivered (reconnect replay / redelivery)
+                if !m.message_id.is_empty() && !seen.insert(m.message_id.clone()) {
+                    return;
+                }
+                if seen.len() > 10_000 {
+                    seen.clear();
+                }
+                let content = strip_html(&m.content);
+                if content.trim().is_empty() {
+                    return;
+                }
+
+                if cmd.json {
+                    let obj = serde_json::json!({
+                        "chat_id": m.chat_id,
+                        "message_id": m.message_id,
+                        "from": m.from,
+                        "from_mri": m.from_mri,
+                        "time": chrono::Utc::now().to_rfc3339(),
+                        "content": content,
+                        "source": "push",
+                    });
+                    println!("{}", serde_json::to_string(&obj).unwrap_or_default());
+                    let _ = std::io::stdout().flush();
+                } else if !cmd.quiet {
+                    let time = chrono::Local::now().format("%H:%M:%S").to_string();
+                    println!(
+                        "{} 💬 {} {}",
+                        format!("[{}]", time).dimmed(),
+                        format!("{}:", m.from).cyan().bold(),
+                        truncate(&content, 80)
+                    );
+                }
+
+                if cmd.notify {
+                    send_notification(
+                        &format!("Teams: {}", m.from),
+                        &truncate(&content, 100),
+                        "teams",
+                    );
+                }
+            })
+            .await;
+
+        match res {
+            Ok(()) => backoff = 2,
+            Err(e) => {
+                eprintln!("push connection error: {e}");
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(backoff)).await;
+        backoff = (backoff * 2).min(60);
     }
 }
 

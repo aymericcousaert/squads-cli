@@ -4,9 +4,11 @@
 pub mod auth;
 pub mod client;
 pub mod emoji;
+pub mod trouter;
 
 pub use auth::*;
 pub use client::*;
+pub use trouter::*;
 
 // API scopes
 pub const SCOPE_IC3: &str = "https://ic3.teams.office.com/.default";
