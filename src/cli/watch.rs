@@ -34,7 +34,7 @@ pub struct WatchCommand {
     #[arg(short, long)]
     pub push: bool,
 
-    /// Emit each new message as a JSON line (for scripts / agents). Implies chats.
+    /// Emit each new message as a JSON line (for scripts / agents). Implies --push.
     #[arg(long)]
     pub json: bool,
 }
@@ -53,7 +53,8 @@ pub enum WatchSource {
 pub async fn execute(cmd: WatchCommand, config: &Config) -> Result<()> {
     let client = TeamsClient::new(config)?;
 
-    if cmd.push {
+    // --json is a push-only output mode; imply push so it never silently no-ops.
+    if cmd.push || cmd.json {
         return watch_push(&client, &cmd).await;
     }
 
@@ -277,6 +278,14 @@ async fn watch_push(client: &TeamsClient, cmd: &WatchCommand) -> Result<()> {
     let me = client.get_me().await.ok();
     let my_mri = me.as_ref().map(|p| format!("8:orgid:{}", p.id));
 
+    if matches!(cmd.source, WatchSource::Mail) {
+        eprintln!("note: --push is chats-only; --source mail is ignored");
+    }
+
+    // Dedup across the session: Trouter redelivers un-acked events and replays recent
+    // messages on every reconnect, so without this the same message fires twice.
+    let mut seen: HashSet<String> = HashSet::new();
+
     if !cmd.json {
         println!(
             "{}",
@@ -302,6 +311,13 @@ async fn watch_push(client: &TeamsClient, cmd: &WatchCommand) -> Result<()> {
                 // optional chat filter
                 if !cmd.chat.is_empty() && !cmd.chat.contains(&m.chat_id) {
                     return;
+                }
+                // skip messages we've already delivered (reconnect replay / redelivery)
+                if !m.message_id.is_empty() && !seen.insert(m.message_id.clone()) {
+                    return;
+                }
+                if seen.len() > 10_000 {
+                    seen.clear();
                 }
                 let content = strip_html(&m.content);
                 if content.trim().is_empty() {
