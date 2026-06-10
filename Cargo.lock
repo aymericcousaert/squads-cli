@@ -3036,6 +3036,7 @@ dependencies = [
  "colored",
  "crossterm",
  "directories",
+ "flate2",
  "futures",
  "markdown",
  "notify-rust",
