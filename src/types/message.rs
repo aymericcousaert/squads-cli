@@ -77,7 +77,7 @@ pub struct Card {
     pub app_id: Option<String>,
     pub app_name: Option<String>,
     pub app_icon: Option<String>,
-    pub card_client_id: String,
+    pub card_client_id: Option<String>,
     pub content: CardContent,
     pub content_type: String,
     pub preview_hidden: Option<bool>,
