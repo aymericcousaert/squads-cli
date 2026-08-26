@@ -10,7 +10,7 @@ use super::OutputFormat;
 use crate::api::TeamsClient;
 use crate::config::Config;
 
-const NOTES_CHAT_ID: &str = "48:notes";
+pub const NOTES_CHAT_ID: &str = "48:notes";
 
 #[derive(Args, Debug)]
 pub struct NotesCommand {
@@ -38,6 +38,10 @@ pub enum NotesSubcommand {
         /// Use markdown to HTML conversion
         #[arg(short, long)]
         markdown: bool,
+
+        /// Send raw HTML without escaping
+        #[arg(long)]
+        html: bool,
     },
     /// Delete a note
     Delete {
@@ -63,7 +67,8 @@ pub async fn execute(cmd: NotesCommand, config: &Config, format: OutputFormat) -
             message,
             stdin,
             markdown,
-        } => add(config, message, stdin, markdown).await,
+            html,
+        } => add(config, message, stdin, markdown, html).await,
         NotesSubcommand::Delete { message_id } => delete(config, &message_id).await,
     }
 }
@@ -97,7 +102,13 @@ async fn list(config: &Config, limit: usize, format: OutputFormat) -> Result<()>
     Ok(())
 }
 
-async fn add(config: &Config, message: Option<String>, stdin: bool, markdown: bool) -> Result<()> {
+async fn add(
+    config: &Config,
+    message: Option<String>,
+    stdin: bool,
+    markdown: bool,
+    html: bool,
+) -> Result<()> {
     let content = if let Some(msg) = message {
         msg
     } else if stdin {
@@ -115,7 +126,9 @@ async fn add(config: &Config, message: Option<String>, stdin: bool, markdown: bo
     }
 
     let client = TeamsClient::new(config)?;
-    let html_body = if markdown {
+    let html_body = if html {
+        content
+    } else if markdown {
         markdown_to_html(&content)
     } else {
         format!("<p>{}</p>", html_escape(&content))
