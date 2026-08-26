@@ -10,6 +10,7 @@ use crate::api::TeamsClient;
 use crate::config::Config;
 use crate::types::Chat;
 
+use super::notes::NOTES_CHAT_ID;
 use super::output::{print_error, print_output, print_single, print_success};
 use super::utils::{html_escape, markdown_to_html, strip_html, truncate};
 use super::OutputFormat;
@@ -666,11 +667,14 @@ async fn send(
     let client = TeamsClient::new(config)?;
 
     // Resolve the chat ID
-    let resolved_chat_id = if let Some(to_query) = to {
+    let destination = if let Some(to_query) = to {
         // Search for user by name or email
         resolve_user_to_chat(&client, &to_query).await?
     } else if let Some(id) = chat_id {
-        id
+        Destination {
+            label: format!("chat {}", id),
+            chat_id: id,
+        }
     } else {
         print_error("Either chat_id or --to must be provided");
         return Ok(());
@@ -685,15 +689,25 @@ async fn send(
     };
 
     client
-        .send_message(&resolved_chat_id, &html_body, None)
+        .send_message(&destination.chat_id, &html_body, None)
         .await?;
-    print_success("Message sent successfully");
+    print_success(&format!("Message sent to {}", destination.label));
 
     Ok(())
 }
 
-/// Resolve a user query (name or email) to a chat ID
-async fn resolve_user_to_chat(client: &TeamsClient, query: &str) -> Result<String> {
+/// A chat that was positively identified as the target of a send
+struct Destination {
+    chat_id: String,
+    /// Who the message goes to, for the success line
+    label: String,
+}
+
+/// Resolve a user query (name or email) to the chat to send to.
+///
+/// Never falls back to an arbitrary chat: if the query does not identify one
+/// person, this returns an error instead of picking a chat.
+async fn resolve_user_to_chat(client: &TeamsClient, query: &str) -> Result<Destination> {
     // Search for users matching the query
     let users_response = client.search_users(query, 10).await?;
     let users = &users_response.value;
@@ -702,29 +716,24 @@ async fn resolve_user_to_chat(client: &TeamsClient, query: &str) -> Result<Strin
         anyhow::bail!("No users found matching \"{}\"", query);
     }
 
-    if users.len() > 1 {
-        // Check if any user is an exact email match
-        let exact_match = users.iter().find(|u| {
-            u.mail
-                .as_ref()
-                .is_some_and(|e: &String| e.eq_ignore_ascii_case(query))
-        });
-
-        if let Some(user) = exact_match {
-            return find_or_create_chat_with_user(client, &user.id).await;
-        }
-
-        // Check if any user is an exact display name match
-        let exact_name_match = users.iter().find(|u| {
-            u.display_name
-                .as_ref()
-                .is_some_and(|n: &String| n.eq_ignore_ascii_case(query))
-        });
-
-        if let Some(user) = exact_name_match {
-            return find_or_create_chat_with_user(client, &user.id).await;
-        }
-
+    // Case-insensitive and accent-safe: to_lowercase() folds non-ASCII letters,
+    // eq_ignore_ascii_case() does not
+    let wanted = query.to_lowercase();
+    let user = if users.len() == 1 {
+        &users[0]
+    } else if let Some(user) = users.iter().find(|u| {
+        u.mail
+            .as_ref()
+            .is_some_and(|e: &String| e.to_lowercase() == wanted)
+    }) {
+        user
+    } else if let Some(user) = users.iter().find(|u| {
+        u.display_name
+            .as_ref()
+            .is_some_and(|n: &String| n.to_lowercase() == wanted)
+    }) {
+        user
+    } else {
         // Multiple matches, show them to the user
         eprintln!("Multiple users found matching \"{}\":", query);
         for (i, user) in users.iter().enumerate() {
@@ -733,30 +742,56 @@ async fn resolve_user_to_chat(client: &TeamsClient, query: &str) -> Result<Strin
             eprintln!("  {}. {} ({})", i + 1, name, email);
         }
         anyhow::bail!("Please use full name or email to be more specific");
+    };
+
+    let name = user
+        .display_name
+        .clone()
+        .or_else(|| user.mail.clone())
+        .unwrap_or_else(|| user.id.clone());
+
+    let me = client.get_me().await?;
+
+    // A chat with yourself is the Notes chat, not a 1:1 chat
+    if me.id.eq_ignore_ascii_case(&user.id) {
+        return Ok(Destination {
+            chat_id: NOTES_CHAT_ID.to_string(),
+            label: format!("your Notes ({})", name),
+        });
     }
 
-    // Exactly one match
-    let user = &users[0];
-    find_or_create_chat_with_user(client, &user.id).await
+    let chat_id = find_one_on_one_chat(client, &user.id, &me.id).await?;
+    Ok(Destination {
+        chat_id,
+        label: name,
+    })
 }
 
-/// Find existing 1:1 chat with a user or create a new one
-async fn find_or_create_chat_with_user(client: &TeamsClient, user_id: &str) -> Result<String> {
-    // Get all chats and look for existing 1:1 chat with this user
+/// Find the existing 1:1 chat with a user, or create one.
+///
+/// A chat only matches when the single other member is that user. Matching on
+/// "the user is a member" alone would match every 1:1 chat when the target is
+/// yourself, and send to whichever chat the API listed first.
+async fn find_one_on_one_chat(
+    client: &TeamsClient,
+    user_id: &str,
+    my_user_id: &str,
+) -> Result<String> {
     let details = client.get_user_details().await?;
 
     for chat in &details.chats {
-        // Check if this is a 1:1 chat (2 members)
-        if chat.members.len() == 2 {
-            // Check if the target user is a member
-            let has_user = chat
-                .members
-                .iter()
-                .any(|m| m.object_id.as_ref() == Some(&user_id.to_string()));
+        if chat.members.len() != 2 {
+            continue;
+        }
+        let others: Vec<&str> = chat
+            .members
+            .iter()
+            .filter_map(|m| m.object_id.as_deref())
+            .filter(|id| !id.eq_ignore_ascii_case(my_user_id))
+            .collect();
 
-            if has_user {
-                return Ok(chat.id.clone());
-            }
+        if others.len() == 1 && others[0].eq_ignore_ascii_case(user_id) {
+            return Ok(chat.id.clone());
         }
     }
 
