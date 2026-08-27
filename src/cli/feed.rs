@@ -194,7 +194,7 @@ pub async fn execute(cmd: FeedCommand, config: &Config, format: OutputFormat) ->
     }
 
     // Sort by timestamp (newest first)
-    items.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    items.sort_by_key(|a| std::cmp::Reverse(a.timestamp));
 
     // Limit results
     items.truncate(cmd.limit);
