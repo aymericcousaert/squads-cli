@@ -59,7 +59,12 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }} --features tui
 
+      # The updater downloads assets by platform name, so rename before upload.
+      - name: Rename binary
+        shell: bash
+        run: mv "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "${{ matrix.asset_name }}"
+
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
         with:
-          files: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+          files: ${{ matrix.asset_name }}
