@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -323,20 +324,46 @@ impl TeamsClient {
         chat_id: &str,
         user_id: &str,
     ) -> Result<Option<String>> {
+        let wanted = [user_id.to_string()];
+        let names = self.resolve_names_from_messages(chat_id, &wanted).await?;
+        Ok(names.into_values().next())
+    }
+
+    /// Resolve several display names from a single chat, keyed by user object ID.
+    /// One message fetch covers every member of the chat.
+    pub async fn resolve_names_from_messages(
+        &self,
+        chat_id: &str,
+        user_ids: &[String],
+    ) -> Result<HashMap<String, String>> {
         let convs = self.get_conversations(chat_id, None).await?;
-        let mri_suffix = format!("8:orgid:{}", user_id);
-        for msg in &convs.messages {
-            if let Some(ref from) = msg.from {
-                if from.contains(&mri_suffix) {
-                    if let Some(ref name) = msg.im_display_name {
-                        if !name.is_empty() {
-                            return Ok(Some(name.clone()));
-                        }
-                    }
-                }
+        // Deduplicated: a repeated ID would make the "found them all" check below
+        // unreachable, so every message would be scanned for nothing.
+        let mut wanted: Vec<(&String, String)> = Vec::new();
+        for id in user_ids {
+            if !wanted.iter().any(|(seen, _)| *seen == id) {
+                wanted.push((id, format!("8:orgid:{}", id)));
             }
         }
-        Ok(None)
+
+        let mut names: HashMap<String, String> = HashMap::new();
+        for msg in &convs.messages {
+            let (Some(from), Some(name)) = (&msg.from, &msg.im_display_name) else {
+                continue;
+            };
+            if name.is_empty() {
+                continue;
+            }
+            for (id, mri_suffix) in &wanted {
+                if !names.contains_key(*id) && from.contains(mri_suffix) {
+                    names.insert((*id).clone(), name.clone());
+                }
+            }
+            if names.len() == wanted.len() {
+                break;
+            }
+        }
+        Ok(names)
     }
 
     /// Get conversations/messages from a chat

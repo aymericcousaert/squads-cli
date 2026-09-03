@@ -5,8 +5,13 @@ use anyhow::{Context, Result};
 use serde::{de::DeserializeOwned, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::process;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::config::Config;
+
+/// Keeps concurrent writers in the same process off each other's temp file.
+static WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Cache manager for storing tokens and data
 pub struct Cache {
@@ -27,12 +32,22 @@ impl Cache {
         self.cache_dir.join(filename)
     }
 
-    /// Save data to cache
+    /// Save data to cache.
+    ///
+    /// Writes a temporary file first, then renames it over the target. A reader
+    /// never sees a half-written file, and two writers cannot interleave.
     pub fn save<T: Serialize>(&self, filename: &str, data: &T) -> Result<()> {
         let path = self.file_path(filename);
         let content = serde_json::to_string_pretty(data).context("Failed to serialize data")?;
-        fs::write(&path, content)
-            .with_context(|| format!("Failed to write cache file: {:?}", path))?;
+
+        let seq = WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = self.file_path(&format!("{}.{}.{}.tmp", filename, process::id(), seq));
+        fs::write(&tmp, content)
+            .with_context(|| format!("Failed to write cache file: {:?}", tmp))?;
+        if let Err(err) = fs::rename(&tmp, &path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(err).with_context(|| format!("Failed to write cache file: {:?}", path));
+        }
         Ok(())
     }
 
