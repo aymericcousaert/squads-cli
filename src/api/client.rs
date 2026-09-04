@@ -50,6 +50,30 @@ pub struct TeamsClient {
     cache: Cache,
 }
 
+/// A file uploaded to OneDrive and shared, ready for a chat message to point at.
+#[derive(Debug, Clone)]
+pub struct SharedFile {
+    /// GUID taken from the driveItem eTag: what a reference attachment keys on.
+    pub id: String,
+    pub name: String,
+    /// Organisation-scoped link, without which the recipient cannot open the file.
+    pub url: String,
+}
+
+/// Above this size a single PUT is refused and Graph wants an upload session.
+const MAX_SIMPLE_UPLOAD: u64 = 4 * 1024 * 1024;
+
+/// The folder Teams uses for files sent in a chat, in an English drive. Its real
+/// name is localised per user, so it is only the fallback when none is found.
+const CHAT_FILES_FOLDER: &str = "Microsoft Teams Chat Files";
+
+/// Pull the GUID out of a driveItem eTag, which looks like `"{GUID},1"`.
+fn etag_guid(etag: &str) -> Option<String> {
+    let start = etag.find('{')? + 1;
+    let end = etag.find('}')?;
+    (start < end).then(|| etag[start..end].to_string())
+}
+
 impl TeamsClient {
     /// Create a new Teams client
     pub fn new(config: &Config) -> Result<Self> {
@@ -773,6 +797,225 @@ impl TeamsClient {
                 status,
                 body
             ))
+        }
+    }
+
+    /// Name of the drive folder Teams keeps chat files in.
+    ///
+    /// It is localised: a French account has "Fichiers de conversation Microsoft
+    /// Teams". Hardcoding the English name creates a second folder next to the
+    /// real one, which is where files sent from here would go to die.
+    async fn chat_files_folder(&self) -> String {
+        self.find_chat_files_folder()
+            .await
+            .unwrap_or_else(|| CHAT_FILES_FOLDER.to_string())
+    }
+
+    /// Root folders of the sender's drive, followed across pages.
+    ///
+    /// A drive root with many items comes back paged, and the folder we want can
+    /// sit on any page.
+    async fn find_chat_files_folder(&self) -> Option<String> {
+        let token = self.get_token(SCOPE_GRAPH).await.ok()?;
+        let mut next = Some(
+            "https://graph.microsoft.com/v1.0/me/drive/root/children?$select=name,folder&$top=200"
+                .to_string(),
+        );
+        let mut names: Vec<String> = Vec::new();
+        let mut pages = 0;
+
+        while let Some(url) = next.take() {
+            pages += 1;
+            if pages > 20 {
+                break;
+            }
+            let res = self.http.get(&url).bearer_auth(&token.value).send().await;
+            let Ok(res) = res else { break };
+            let Ok(body) = res.json::<serde_json::Value>().await else {
+                break;
+            };
+            let Some(items) = body["value"].as_array() else {
+                break;
+            };
+            names.extend(
+                items
+                    .iter()
+                    .filter(|i| i.get("folder").is_some())
+                    .filter_map(|i| i["name"].as_str())
+                    .map(|n| n.to_string()),
+            );
+            next = body["@odata.nextLink"].as_str().map(|s| s.to_string());
+        }
+
+        // Other Teams folders ("Microsoft Teams Data") also live in the root and
+        // the listing order is arbitrary, so take the exact name when it is there.
+        names
+            .iter()
+            .find(|n| n.as_str() == CHAT_FILES_FOLDER)
+            // Every translation keeps the product name in it.
+            .or_else(|| names.iter().find(|n| n.contains("Microsoft Teams")))
+            .cloned()
+    }
+
+    /// Upload a file to the sender's OneDrive, then share it with the organisation.
+    ///
+    /// A chat attachment is a reference, never the bytes: Teams keeps the file in
+    /// the sender's drive and the message only points at it. Without the sharing
+    /// link the recipient sees an attachment they cannot open.
+    pub async fn upload_chat_file(&self, path: &std::path::Path) -> Result<SharedFile> {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .ok_or_else(|| anyhow!("Not a file: {}", path.display()))?;
+        // Check the size first: reading a huge file only to reject it would load
+        // the whole thing into memory.
+        let size = std::fs::metadata(path)
+            .with_context(|| format!("Cannot read {}", path.display()))?
+            .len();
+        if size > MAX_SIMPLE_UPLOAD {
+            return Err(anyhow!(
+                "{} is {:.1} MB; files over 4 MB need an upload session, which is not implemented",
+                name,
+                size as f64 / 1024.0 / 1024.0
+            ));
+        }
+        let bytes =
+            std::fs::read(path).with_context(|| format!("Cannot read {}", path.display()))?;
+
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let folder = self.chat_files_folder().await;
+        // Rename on conflict: replacing would rewrite the file an earlier message
+        // already points at.
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/drive/root:/{}/{}:/content?@microsoft.graph.conflictBehavior=rename",
+            urlencoding::encode(&folder),
+            urlencoding::encode(&name)
+        );
+
+        let res = self
+            .http
+            .put(&url)
+            .bearer_auth(&token.value)
+            .header("content-type", "application/octet-stream")
+            .body(bytes)
+            .send()
+            .await?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(anyhow!("Failed to upload {}: {} - {}", name, status, body));
+        }
+
+        let item: serde_json::Value = res.json().await.context("Failed to parse driveItem")?;
+        let item_id = item["id"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Upload returned no item id"))?
+            .to_string();
+        let web_url = item["webUrl"].as_str().unwrap_or_default().to_string();
+        // The drive renames on conflict, so use the name it gave back.
+        let name = item["name"].as_str().unwrap_or(&name).to_string();
+        // The attachment is keyed on the eTag GUID; the item id is the fallback.
+        let id = item["eTag"]
+            .as_str()
+            .and_then(etag_guid)
+            .unwrap_or_else(|| item_id.clone());
+
+        // An attachment with no URL is one the recipient cannot open, so only
+        // fall back to the drive URL, never to nothing.
+        let url = match self.share_with_organization(&item_id).await {
+            Ok(link) => link,
+            Err(e) if !web_url.is_empty() => {
+                eprintln!("Warning: no sharing link for {} ({}); using the drive URL, which only members with access can open", name, e);
+                web_url
+            }
+            Err(e) => return Err(e),
+        };
+
+        Ok(SharedFile { id, name, url })
+    }
+
+    /// Sharing link scoped to the tenant, so any member of the chat can open it.
+    async fn share_with_organization(&self, item_id: &str) -> Result<String> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/me/drive/items/{}/createLink",
+            item_id
+        );
+        let res = self
+            .http
+            .post(&url)
+            .bearer_auth(&token.value)
+            .json(&serde_json::json!({ "type": "view", "scope": "organization" }))
+            .send()
+            .await?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(anyhow!("Failed to share file: {} - {}", status, body));
+        }
+
+        let permission: serde_json::Value = res.json().await?;
+        permission["link"]["webUrl"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow!("Sharing link came back without a URL"))
+    }
+
+    /// Send a message carrying file attachments.
+    ///
+    /// Goes through Graph rather than the internal chat service used by
+    /// `send_message`: the reference-attachment shape is documented there, while
+    /// the internal `properties.files` payload is not.
+    pub async fn send_message_with_files(
+        &self,
+        chat_id: &str,
+        content: &str,
+        files: &[SharedFile],
+    ) -> Result<String> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+
+        // Each attachment needs its own placeholder in the body, or Teams shows
+        // the message without the file.
+        let mut body = content.to_string();
+        for file in files {
+            body.push_str(&format!("<attachment id=\"{}\"></attachment>", file.id));
+        }
+
+        let attachments: Vec<serde_json::Value> = files
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "id": f.id,
+                    "contentType": "reference",
+                    "contentUrl": f.url,
+                    "name": f.name,
+                })
+            })
+            .collect();
+
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/chats/{}/messages",
+            chat_id
+        );
+        let res = self
+            .http
+            .post(&url)
+            .bearer_auth(&token.value)
+            .json(&serde_json::json!({
+                "body": { "contentType": "html", "content": body },
+                "attachments": attachments,
+            }))
+            .send()
+            .await?;
+
+        if res.status().is_success() {
+            res.text().await.context("Failed to read response")
+        } else {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            Err(anyhow!("Failed to send message: {} - {}", status, body))
         }
     }
 

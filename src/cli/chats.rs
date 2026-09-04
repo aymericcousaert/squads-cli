@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{self, Read};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -95,6 +96,10 @@ pub enum ChatsSubcommand {
         /// Send raw HTML without escaping
         #[arg(long)]
         html: bool,
+
+        /// Attach file(s) (can be specified multiple times)
+        #[arg(short, long = "attachment")]
+        attachments: Vec<String>,
     },
 
     /// Create a new chat
@@ -349,6 +354,7 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
             file,
             markdown,
             html,
+            attachments,
         } => {
             send(
                 config,
@@ -359,6 +365,7 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
                 file,
                 markdown,
                 html,
+                &attachments,
             )
             .await
         }
@@ -773,6 +780,7 @@ async fn send(
     file: Option<String>,
     markdown: bool,
     html: bool,
+    attachments: &[String],
 ) -> Result<()> {
     // When --to is used, the first positional arg is the message, not chat_id
     let (chat_id, actual_message) = if to.is_some() {
@@ -789,12 +797,15 @@ async fn send(
         buffer.trim().to_string()
     } else if let Some(path) = file {
         std::fs::read_to_string(&path)?
+    } else if !attachments.is_empty() {
+        // A file on its own is a message.
+        String::new()
     } else {
         print_error("No message provided. Use --stdin or --file, or provide message as argument.");
         return Ok(());
     };
 
-    if content.is_empty() {
+    if content.is_empty() && attachments.is_empty() {
         print_error("Message cannot be empty");
         return Ok(());
     }
@@ -815,7 +826,9 @@ async fn send(
         return Ok(());
     };
 
-    let html_body = if html {
+    let html_body = if content.is_empty() {
+        String::new()
+    } else if html {
         content
     } else if markdown {
         markdown_to_html(&content)
@@ -823,10 +836,43 @@ async fn send(
         format!("<p>{}</p>", html_escape(&content))
     };
 
+    if attachments.is_empty() {
+        client
+            .send_message(&destination.chat_id, &html_body, None)
+            .await?;
+        print_success(&format!("Message sent to {}", destination.label));
+        return Ok(());
+    }
+
+    // The Notes chat only exists on the internal chat service, so Graph cannot
+    // post to it. Stop before uploading anything.
+    if destination.chat_id == NOTES_CHAT_ID {
+        print_error("Attachments are not supported in your Notes chat");
+        return Ok(());
+    }
+
+    // Check every path before the first upload: bailing halfway would leave the
+    // earlier files sitting in OneDrive with nothing pointing at them.
+    let paths: Vec<&Path> = attachments.iter().map(Path::new).collect();
+    if let Some(missing) = paths.iter().find(|p| !p.is_file()) {
+        print_error(&format!("Attachment not found: {}", missing.display()));
+        return Ok(());
+    }
+
+    let mut files = Vec::with_capacity(paths.len());
+    for path in paths {
+        files.push(client.upload_chat_file(path).await?);
+    }
+
     client
-        .send_message(&destination.chat_id, &html_body, None)
+        .send_message_with_files(&destination.chat_id, &html_body, &files)
         .await?;
-    print_success(&format!("Message sent to {}", destination.label));
+    let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+    print_success(&format!(
+        "Message sent to {} with {}",
+        destination.label,
+        names.join(", ")
+    ));
 
     Ok(())
 }
