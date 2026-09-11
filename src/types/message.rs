@@ -216,6 +216,8 @@ pub struct Message {
     #[serde(alias = "messagetype")]
     pub message_type: Option<String>,
     pub properties: Option<MessageProperties>,
+    /// chatsvc spells this `composetime`, the aggregator `composeTime`.
+    #[serde(alias = "composetime")]
     pub compose_time: Option<String>,
     #[serde(alias = "originalarrivaltime")]
     pub original_arrival_time: Option<String>,
@@ -302,6 +304,57 @@ mod tests {
         serde_json::from_str::<Message>(&json)
             .expect("payload should parse")
             .from
+    }
+
+    /// A chat message as chatsvc sends one, trimmed to the fields a chat UI
+    /// reads: an attachment, a reaction, an edit and a reply.
+    const CHATSVC_MESSAGE: &str = r##"{
+        "id": "1700000000000",
+        "from": "8:orgid:u1",
+        "composetime": "2030-01-01T10:00:00.000Z",
+        "originalarrivaltime": "2030-01-01T10:00:00.000Z",
+        "messagetype": "RichText/Html",
+        "imdisplayname": "Ada Fenwick",
+        "content": "<blockquote itemtype=\"http://schema.skype.com/Reply\" itemid=\"1699999999999\"></blockquote><p>hi</p>",
+        "properties": {
+            "edittime": "1700000000005",
+            "deletetime": "0",
+            "systemdelete": "false",
+            "files": "[{\"id\":\"f1\",\"fileName\":\"y.docx\",\"fileType\":\"docx\",\"objectUrl\":\"https://x/y.docx\",\"fileInfo\":{\"fileUrl\":\"https://x/y.docx\"}}]",
+            "emotions": [{"key":"like","users":[{"mri":"8:orgid:u2","time":1700000000009,"value":"1700000000009"}]}]
+        }
+    }"##;
+
+    fn chatsvc_message_json() -> serde_json::Value {
+        let msg: Message = serde_json::from_str(CHATSVC_MESSAGE).expect("payload should parse");
+        serde_json::to_value(&msg).expect("message should serialise")
+    }
+
+    /// chatsvc sends `composetime`, so without the alias the field serialised
+    /// as null on every message.
+    #[test]
+    fn compose_time_survives_the_lowercase_spelling() {
+        assert_eq!(
+            chatsvc_message_json()["composeTime"],
+            "2030-01-01T10:00:00.000Z"
+        );
+    }
+
+    /// What a client renders a conversation from. Dropping any of it would send
+    /// the caller back to the API for every message.
+    #[test]
+    fn the_json_output_carries_what_a_chat_ui_needs() {
+        let out = chatsvc_message_json();
+        let props = &out["properties"];
+        assert_eq!(props["files"][0]["fileName"], "y.docx");
+        assert_eq!(props["files"][0]["fileInfo"]["fileUrl"], "https://x/y.docx");
+        assert_eq!(props["emotions"][0]["key"], "like");
+        assert_eq!(props["emotions"][0]["users"][0]["mri"], "8:orgid:u2");
+        assert_eq!(props["edittime"], 1_700_000_000_005i64);
+        assert_eq!(props["deletetime"], 0);
+        assert_eq!(props["systemdelete"], false);
+        // Reply and inline images live in the html, so it must stay unstripped.
+        assert!(out["content"].as_str().unwrap().contains("itemid="));
     }
 
     #[test]
