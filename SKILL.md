@@ -86,6 +86,27 @@ Shortcut to manage your personal "Notes" chat.
 - **Add Note**: `squads-cli notes add "<content>"` (Supports `--markdown` and `--stdin`)
 - **Delete Note**: `squads-cli notes delete <msg-id>`
 
+### 9. Real-time Watch
+Stream Teams events as they happen, one JSON object per line.
+- **Follow Messages**: `squads-cli watch --json`
+- **Widen the Stream**: `squads-cli watch --json --events all` (or a comma list: `--events message,typing,read`)
+- **One Chat Only**: `squads-cli watch --json --chat <chat-id>`
+
+Every line carries `event`, `time` and `source`. Only `message` is sent unless you ask for more.
+
+| `event` | Meaning | Fields on top of `event`, `time`, `source` |
+|---|---|---|
+| `message` | a new chat message | `chat_id`, `message_id`, `from`, `from_mri`, `content` |
+| `message_update` | an edit, or a reaction landing on a message | same as `message` |
+| `typing` | someone is typing | `chat_id`, `from` (usually empty) |
+| `read` | someone moved their read marker | `chat_id` |
+| `message_loss` | events were dropped, so resync | none |
+| `presence` | a user's availability changed | `user_id`, `availability` |
+
+`--chat` filters the chat events only. `message_loss` and `presence` always pass. Your own
+messages and edits are dropped. `message` is de-duplicated by `message_id`, `message_update`
+is not, because an edit reuses the id.
+
 ## Best Practices for Agents
 
 1. **Structured Output**: Always use `--format json` when you need to parse results programmatically (e.g., extracting `chat-id` or `msg-id`).

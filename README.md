@@ -15,6 +15,7 @@ A command-line interface for Microsoft Teams, designed for AI agents (Claude Cod
 - **Teams support**: Browse teams and channels
 - **User management**: Search and view user profiles
 - **Activity feed**: View notifications and mentions
+- **Real-time watch**: Stream messages, edits, typing and read receipts as JSON lines
 - **Personal Notes**: Shortcut command to manage your personal notes chat
 
 ## Installation
@@ -90,6 +91,44 @@ squads-cli chats react <chat-id> --message-id <msg-id> 🦄
 squads-cli chats download-file <chat-id> <file-url> --output "file.docx"
 # We recommend using piping for AI agents to process files without saving to disk
 squads-cli chats download-file <chat-id> <file-url> -o - | textutil -convert txt -stdin -stdout
+```
+
+### Watch (real-time)
+
+```bash
+# Follow new messages in the terminal
+squads-cli watch --push
+
+# One JSON line per new message, for scripts and agents
+squads-cli watch --json
+
+# Put other real-time events on the same stream
+squads-cli watch --json --events message,typing,read
+squads-cli watch --json --events all
+
+# Only one chat
+squads-cli watch --json --chat "19:abc@thread.v2"
+```
+
+`--json` prints one JSON object per line. Every line carries `event`, `time` and
+`source`. Only `message` is sent by default, so existing consumers see no change.
+
+| `event` | Meaning | Fields on top of `event`, `time`, `source` |
+|---|---|---|
+| `message` | a new chat message | `chat_id`, `message_id`, `from`, `from_mri`, `content` |
+| `message_update` | an edit, or a reaction landing on a message | same as `message` |
+| `typing` | someone is typing | `chat_id`, `from` (usually empty) |
+| `read` | someone moved their read marker | `chat_id` |
+| `message_loss` | events were dropped, so resync | none |
+| `presence` | a user's availability changed | `user_id`, `availability` |
+
+How the filters apply:
+
+- `--chat` filters the chat events: `message`, `message_update`, `typing` and `read`. `message_loss` and `presence` are account-wide and always pass
+- your own messages and your own edits are dropped
+- `message` is de-duplicated by `message_id`. `message_update` is not, because an edit reuses the id
+- the terminal output (`--push` without `--json`) shows messages only, whatever `--events` says
+- `presence` is parsed and emitted, but nothing subscribes to presence yet, so the stream is quiet until it does
 
 ### Personal Notes
 
