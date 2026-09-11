@@ -75,6 +75,11 @@ squads-cli chats messages <chat-id>
 squads-cli chats messages <chat-id> --format json --types text,thread_activity
 squads-cli chats messages <chat-id> --format json --types all
 
+# Mark a chat as read (clears its unread state in Teams, everywhere)
+squads-cli chats read <chat-id>
+# Read up to a message you already have, which saves the lookup
+squads-cli chats read <chat-id> --message-id <msg-id>
+
 # Send a message
 squads-cli chats send <chat-id> "Hello, World!"
 
@@ -96,6 +101,11 @@ squads-cli chats download-file <chat-id> <file-url> --output "file.docx"
 # We recommend using piping for AI agents to process files without saving to disk
 squads-cli chats download-file <chat-id> <file-url> -o - | textutil -convert txt -stdin -stdout
 ```
+
+`chats read` moves the chat's read watermark to now, which is what Teams
+derives `unread` from. Opening a chat in a client of your own changes nothing
+until you call it. Without `--message-id` it looks the newest message up first,
+so it costs one extra fetch.
 
 `chats messages` returns human messages only, so existing scripts see no change.
 `--types` adds the other kinds to the `--format json` output:

@@ -22,6 +22,7 @@ Search across both Mail and Calendar simultaneously.
   - Group chats display member names (e.g., "John Doe & Alice Smith") instead of "Group (X members)"
 - **View Messages**: `squads-cli chats messages <chat-id>` (includes reactions column)
   - **System messages**: `--types` widens the `--format json` output: `text` (default, human messages), `thread_activity` (members added or removed, topic renames), `event` (calls), `all`. Comma separated. The table output stays human messages only.
+- **Mark as Read**: `squads-cli chats read <chat-id>` (clears the chat's unread state in Teams; `--message-id <msg-id>` skips the newest-message lookup)
 - **Send Message**: `squads-cli chats send <chat-id> "<content>"` or `squads-cli chats send --to <user> "<content>"`
   - **Direct to user**: Use `--to <name or email>` to send without knowing the chat ID:
     - `squads-cli chats send --to ada "Hello!"` (by first name)

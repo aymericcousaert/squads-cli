@@ -85,6 +85,10 @@ const MAX_SIMPLE_UPLOAD: u64 = 4 * 1024 * 1024;
 /// name is localised per user, so it is only the fallback when none is found.
 const CHAT_FILES_FOLDER: &str = "Microsoft Teams Chat Files";
 
+/// What a caller that names no page size gets, and the most the service will
+/// hand back in one response.
+pub const DEFAULT_PAGE_SIZE: usize = 200;
+
 /// Pull the GUID out of a driveItem eTag, which looks like `"{GUID},1"`.
 fn etag_guid(etag: &str) -> Option<String> {
     let start = etag.find('{')? + 1;
@@ -569,6 +573,18 @@ impl TeamsClient {
         thread_id: &str,
         message_id: Option<u64>,
     ) -> Result<Conversations> {
+        self.get_conversations_page(thread_id, message_id, DEFAULT_PAGE_SIZE)
+            .await
+    }
+
+    /// Get conversations/messages from a chat, asking the service for at most
+    /// `page_size` of them. A caller that shows twenty messages pays for twenty.
+    pub async fn get_conversations_page(
+        &self,
+        thread_id: &str,
+        message_id: Option<u64>,
+        page_size: usize,
+    ) -> Result<Conversations> {
         let token = self.get_token(SCOPE_IC3).await?;
 
         let thread_part = match message_id {
@@ -577,9 +593,10 @@ impl TeamsClient {
         };
 
         let url = format!(
-            "{}/conversations/{}/messages?pageSize=200",
+            "{}/conversations/{}/messages?pageSize={}",
             self.regional().await.chatsvc_base(),
-            thread_part
+            thread_part,
+            page_size.clamp(1, DEFAULT_PAGE_SIZE)
         );
 
         let mut headers = HeaderMap::new();

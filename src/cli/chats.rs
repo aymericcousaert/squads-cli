@@ -7,7 +7,7 @@ use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
 use tabled::Tabled;
 
-use crate::api::TeamsClient;
+use crate::api::{TeamsClient, DEFAULT_PAGE_SIZE};
 use crate::config::Config;
 use crate::names::{chat_title, resolve_member_names};
 use crate::types::Chat;
@@ -47,14 +47,25 @@ pub enum ChatsSubcommand {
         /// Chat ID
         chat_id: String,
 
-        /// Maximum number of messages to retrieve
-        #[arg(short, long, default_value = "50")]
-        limit: usize,
+        /// Maximum number of messages to retrieve. Also sizes the fetch, so a
+        /// small limit is a smaller and faster response. [default: 50]
+        #[arg(short, long)]
+        limit: Option<usize>,
 
         /// Message kinds to put in the --format json output, comma separated.
         /// Human messages only by default.
         #[arg(long, value_enum, value_delimiter = ',', default_value = "text")]
         types: Vec<MessageKind>,
+    },
+
+    /// Mark a chat as read
+    Read {
+        /// Chat ID
+        chat_id: String,
+
+        /// Message to read up to. The newest one is looked up when not given.
+        #[arg(short, long)]
+        message_id: Option<String>,
     },
 
     /// Send a message to a chat
@@ -336,6 +347,10 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
             limit,
             types,
         } => messages(config, &chat_id, limit, &types, format).await,
+        ChatsSubcommand::Read {
+            chat_id,
+            message_id,
+        } => read(config, &chat_id, message_id, format).await,
         ChatsSubcommand::Send {
             chat_id_or_message,
             message,
@@ -570,15 +585,34 @@ fn wants_message(selected: &[MessageKind], message_type: Option<&str>) -> bool {
         || message_kind(message_type).is_some_and(|kind| selected.contains(&kind))
 }
 
+/// What `--limit` means when it is not given.
+const DEFAULT_MESSAGE_LIMIT: usize = 50;
+
+/// The page to ask for so `limit` human messages survive the filtering below.
+/// Call records and joins are dropped after the fetch, so ask for a few spare.
+fn page_for(limit: usize) -> usize {
+    limit.saturating_add(20).min(DEFAULT_PAGE_SIZE)
+}
+
 async fn messages(
     config: &Config,
     chat_id: &str,
-    limit: usize,
+    limit: Option<usize>,
     types: &[MessageKind],
     format: OutputFormat,
 ) -> Result<()> {
     let client = TeamsClient::new(config)?;
-    let conversations = client.get_conversations(chat_id, None).await?;
+    // No --limit keeps the whole page, so what this printed before it could ask
+    // for less, it still prints.
+    let conversations = match limit {
+        Some(limit) => {
+            client
+                .get_conversations_page(chat_id, None, page_for(limit))
+                .await?
+        }
+        None => client.get_conversations(chat_id, None).await?,
+    };
+    let limit = limit.unwrap_or(DEFAULT_MESSAGE_LIMIT);
 
     let json = matches!(format, OutputFormat::Json);
     if !json && types != [MessageKind::Text] {
@@ -643,6 +677,52 @@ async fn messages(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// What `chats read` prints, so a caller can see which message the read
+/// watermark was moved to.
+#[derive(Debug, Serialize)]
+struct ReadJson {
+    chat_id: String,
+    message_id: Option<String>,
+}
+
+async fn read(
+    config: &Config,
+    chat_id: &str,
+    message_id: Option<String>,
+    format: OutputFormat,
+) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    // The watermark names the newest message you have seen, so one has to be
+    // looked up when the caller names none. A one-message page covers it.
+    let message_id = match message_id {
+        Some(id) => Some(id),
+        None => newest_message_id(&client, chat_id).await?,
+    };
+
+    client
+        .mark_chat_read(chat_id, message_id.as_deref())
+        .await?;
+
+    match format {
+        OutputFormat::Json => print_single(
+            &ReadJson {
+                chat_id: chat_id.to_string(),
+                message_id,
+            },
+            format,
+        ),
+        _ => print_success("Chat marked read"),
+    }
+    Ok(())
+}
+
+/// The newest message in a chat, or None when it holds nothing. The service
+/// hands messages back newest first, so the first of them is the one wanted.
+async fn newest_message_id(client: &TeamsClient, chat_id: &str) -> Result<Option<String>> {
+    let convs = client.get_conversations_page(chat_id, None, 1).await?;
+    Ok(convs.messages.into_iter().find_map(|m| m.id))
+}
+
 async fn send(
     config: &Config,
     chat_id_or_message: Option<String>,
@@ -1414,5 +1494,61 @@ mod tests {
             panic!("expected chats messages");
         };
         assert_eq!(types, [MessageKind::Text, MessageKind::ThreadActivity]);
+    }
+
+    #[test]
+    fn a_limit_sizes_the_fetch_and_no_limit_keeps_the_whole_page() {
+        // Spare room for the call records dropped after the fetch.
+        assert_eq!(page_for(60), 80);
+        assert_eq!(page_for(1), 21);
+        // Never more than the service hands back anyway.
+        assert_eq!(page_for(500), DEFAULT_PAGE_SIZE);
+        assert_eq!(page_for(usize::MAX), DEFAULT_PAGE_SIZE);
+
+        let cli = Cli::try_parse_from(["squads-cli", "chats", "messages", "19:x@thread.v2"])
+            .expect("no --limit should parse");
+        let Commands::Chats(ChatsCommand {
+            command: ChatsSubcommand::Messages { limit, .. },
+        }) = cli.command
+        else {
+            panic!("expected chats messages");
+        };
+        assert_eq!(limit, None);
+    }
+
+    #[test]
+    fn read_takes_an_optional_message_id() {
+        let cli = Cli::try_parse_from(["squads-cli", "chats", "read", "19:x@thread.v2"])
+            .expect("no --message-id should parse");
+        let Commands::Chats(ChatsCommand {
+            command:
+                ChatsSubcommand::Read {
+                    chat_id,
+                    message_id,
+                },
+        }) = cli.command
+        else {
+            panic!("expected chats read");
+        };
+        assert_eq!(chat_id, "19:x@thread.v2");
+        // Nothing named, so the command looks the newest message up itself.
+        assert_eq!(message_id, None);
+
+        let cli = Cli::try_parse_from([
+            "squads-cli",
+            "chats",
+            "read",
+            "19:x@thread.v2",
+            "--message-id",
+            "1700000000000",
+        ])
+        .expect("flag should parse");
+        let Commands::Chats(ChatsCommand {
+            command: ChatsSubcommand::Read { message_id, .. },
+        }) = cli.command
+        else {
+            panic!("expected chats read");
+        };
+        assert_eq!(message_id.as_deref(), Some("1700000000000"));
     }
 }
