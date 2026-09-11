@@ -183,7 +183,11 @@ impl TeamsClient {
                             let _ = write.send(WsMessage::Text(pong.into())).await;
                         }
                     } else if txt.starts_with("3:::") {
-                        if let Ok(req) = serde_json::from_str::<Value>(frame_data(&txt)) {
+                        let parsed = serde_json::from_str::<Value>(frame_data(&txt));
+                        if parsed.is_err() && debug {
+                            eprintln!("[trouter] envelope did not parse");
+                        }
+                        if let Ok(req) = parsed {
                             // ack the request on the socket
                             let ack = json!({"id": req["id"], "status": 200, "body": ""});
                             let _ = write.send(WsMessage::Text(format!("3:::{ack}").into())).await;
@@ -352,11 +356,31 @@ fn parse_event(req: &Value) -> Option<TrouterEvent> {
         return None;
     }
 
-    let body = decode_body(req)?;
-    let resource = body.get("resource")?;
+    // Each step reports why it gave up. A silent drop here is indistinguishable
+    // from an event Teams never sent.
+    let Some(body) = decode_body(req) else {
+        log_unhandled(url, "body did not decode");
+        return None;
+    };
+    let Some(resource) = body.get("resource") else {
+        log_unhandled(url, "no resource in body");
+        return None;
+    };
     let resource_type = body["resourceType"].as_str().unwrap_or_default();
     let message_type = resource["messagetype"].as_str().unwrap_or_default();
-    let chat_id = extract_chat_id(resource["conversationLink"].as_str()?)?;
+    let chat_id = match resource["conversationLink"]
+        .as_str()
+        .and_then(extract_chat_id)
+    {
+        Some(id) => id,
+        None => {
+            log_unhandled(
+                url,
+                &format!("no chat id, resourceType={resource_type} messagetype={message_type}"),
+            );
+            return None;
+        }
+    };
 
     // Teams also labels control messages as resourceType "NewMessage", so the
     // messagetype cases must be matched first or they never reach their branch.
@@ -365,10 +389,9 @@ fn parse_event(req: &Value) -> Option<TrouterEvent> {
             Some(TrouterEvent::ReadHorizon { chat_id })
         }
         ("Control/Typing", _) => {
+            // The sender name is missing on some of these. The chat is the useful
+            // part, so report the event either way.
             let from = resource["imdisplayname"].as_str().unwrap_or_default();
-            if from.is_empty() {
-                return None;
-            }
             Some(TrouterEvent::Typing {
                 chat_id,
                 from: from.to_string(),

@@ -314,18 +314,28 @@ async fn watch_push(client: &TeamsClient, cmd: &WatchCommand) -> Result<()> {
                         return;
                     }
                 };
+                // Each skip says why, so a message that never printed can be told
+                // apart from one that never arrived.
+                let skip = |reason: &str| {
+                    if debug {
+                        eprintln!("[watch] skipped {}: {reason}", m.message_id);
+                    }
+                };
                 // skip our own messages
                 if let Some(mri) = &my_mri {
                     if &m.from_mri == mri {
+                        skip("own message");
                         return;
                     }
                 }
                 // optional chat filter
                 if !cmd.chat.is_empty() && !cmd.chat.contains(&m.chat_id) {
+                    skip("chat filtered out");
                     return;
                 }
                 // skip messages we've already delivered (reconnect replay / redelivery)
                 if !m.message_id.is_empty() && !seen.insert(m.message_id.clone()) {
+                    skip("already delivered");
                     return;
                 }
                 if seen.len() > 10_000 {
@@ -333,6 +343,7 @@ async fn watch_push(client: &TeamsClient, cmd: &WatchCommand) -> Result<()> {
                 }
                 let content = strip_html(&m.content);
                 if content.trim().is_empty() {
+                    skip("empty after html strip");
                     return;
                 }
 
