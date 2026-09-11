@@ -3,13 +3,17 @@
 // Implements the Skype/Teams "Trouter" notification protocol (socket.io 0.9 over a
 // WebSocket) so we receive new chat messages the instant they arrive, instead of
 // polling. Flow:
-//   1. POST go.trouter.teams.microsoft.com/v4/a  -> socketio url, surl, connectparams
-//   2. GET  {socketio}socket.io/1/?<params>      -> session id (socket.io 0.9 handshake)
-//   3. WS   wss://.../socket.io/1/websocket/<session>?<params>
-//   4. on frame "1" (connected): send user.authenticate, then POST registrar to route
-//      message notifications to our trouter `surl`.
-//   5. incoming events arrive as "3:::{id,method,url,headers,body}"; ack each with
+//   1. WS wss://go-<code>.trouter.teams.microsoft.com/v4/c?<tc,timeout,epid,ccid,
+//      cor_id,con_num>, or the reconnect url the last session gave us.
+//   2. on frame "1::" (connected): send user.authenticate over the socket.
+//   3. the server answers with a "trouter.connected" frame carrying our `surl`:
+//      POST it to the registrar so message notifications are routed to us, and
+//      keep its `reconnectUrl` for the next connect.
+//   4. incoming events arrive as "3:::{id,method,url,headers,body}"; ack each with
 //      "3:::{id,status:200,body:\"\"}" and surface the ones we understand.
+//   5. a frame whose sequence field carries a "+" wants an ack: "6:::<seq>+[]".
+//      A server ping wants "6:::<seq>+[\"pong\"]" instead, and we send a bare
+//      "2::" heartbeat every 15 seconds.
 //
 // Events come from two url families. A /messaging url carries chat activity: new
 // messages, message updates (edits and reactions), read horizon updates and typing.
@@ -29,6 +33,12 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::{TeamsClient, SCOPE_CHATSVCAGG};
+
+/// Client descriptor the service expects in the connect query.
+const TROUTER_TC: &str = r#"{"cv":"2024.23.01.2","ua":"TeamsCDL","hr":"","v":"1.0.0"}"#;
+
+/// Origin the service accepts a web-worker client from.
+const TROUTER_ORIGIN: &str = "https://teams.cloud.microsoft";
 
 /// A chat message delivered over Trouter.
 #[derive(Debug, Clone)]
@@ -57,6 +67,9 @@ pub enum TrouterEvent {
         user_id: String,
         availability: String,
     },
+    /// The service dropped notifications it could not deliver. Whatever they
+    /// carried has to be picked up by a resync.
+    MessageLoss,
 }
 
 impl TeamsClient {
@@ -69,103 +82,44 @@ impl TeamsClient {
         let debug = std::env::var("SQUADS_TROUTER_DEBUG").is_ok();
         let skype = self.get_skype_token().await?;
         let bearer = self.get_token(SCOPE_CHATSVCAGG).await?;
-        let epid = uuid::Uuid::new_v4().to_string();
+        let epid = self.trouter_epid().to_string();
+
+        // A reconnect url points at the node that held the last session, so the
+        // service prefers it over the regional entry point.
+        let reconnect = self.trouter_reconnect_url();
+        let base = match &reconnect {
+            Some(url) => url.clone(),
+            None => self.regional().await.trouter_default_url(),
+        };
+        let query = connect_query(
+            &epid,
+            &uuid::Uuid::new_v4().to_string(),
+            &format!("{}_0", Utc::now().timestamp_millis()),
+        );
         if debug {
-            eprintln!("[trouter] registering epid={epid}");
+            eprintln!("[trouter] connecting epid={epid} url={base}");
         }
 
-        // 1. Trouter registration
-        let reg_url = format!(
-            "https://go.trouter.teams.microsoft.com/v4/a?epid={}",
-            urlencoding::encode(&epid)
-        );
-        let reg: Value = self
-            .http
-            .post(&reg_url)
-            .header("x-skypetoken", &skype.value)
-            .header("content-length", "0")
-            .send()
-            .await?
-            .json()
-            .await?;
-
-        let mut socketio = reg["socketio"]
-            .as_str()
-            .unwrap_or("https://go.trouter.teams.microsoft.com/")
-            .to_string();
-        // ensure a trailing slash so `{socketio}socket.io/1/...` is well-formed
-        if !socketio.ends_with('/') {
-            socketio.push('/');
-        }
-        let surl = reg["surl"]
-            .as_str()
-            .ok_or_else(|| anyhow!("trouter response missing surl"))?
-            .to_string();
-        let ccid = reg["ccid"].as_str().map(|s| s.to_string());
-        let connectparams = reg["connectparams"].clone();
-
-        // build the shared query string (connectparams + tc + con_num + epid + ccid)
-        let mut cp_q = String::new();
-        if let Some(obj) = connectparams.as_object() {
-            for (k, v) in obj {
-                if let Some(s) = v.as_str() {
-                    cp_q.push_str(&format!("{}={}&", k, urlencoding::encode(s)));
-                }
-            }
-        }
-        let tc =
-            urlencoding::encode(r#"{"cv":"2024.23.01.2","ua":"TeamsCDL","hr":"","v":"1.0.0"}"#);
-        let con_num = Utc::now().timestamp_millis();
-        let ccid_q = ccid
-            .as_ref()
-            .map(|c| format!("&ccid={}", urlencoding::encode(c)))
-            .unwrap_or_default();
-        let query = format!(
-            "v=v4&{}tc={}&con_num={}&epid={}{}&auth=true&timeout=40",
-            cp_q,
-            tc,
-            con_num,
-            urlencoding::encode(&epid),
-            ccid_q
-        );
-
-        // 2. socket.io 0.9 handshake -> session id
-        let hs_url = format!("{}socket.io/1/?{}", socketio, query);
-        let hs = self
-            .http
-            .get(&hs_url)
-            .header("x-skypetoken", &skype.value)
-            .send()
-            .await?
-            .text()
-            .await?;
-        let session_id = hs
-            .split(':')
-            .next()
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| anyhow!("bad socket.io handshake: {hs}"))?
-            .to_string();
-
-        // 3. WebSocket connect
-        let host = socketio
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .trim_end_matches('/');
-        let ws_url = format!(
-            "wss://{}/socket.io/1/websocket/{}?{}",
-            host, session_id, query
-        );
-        let mut request = ws_url.into_client_request()?;
+        let mut request = format!("{base}?{query}").into_client_request()?;
         request
             .headers_mut()
-            .insert("x-skypetoken", HeaderValue::from_str(&skype.value)?);
-        let (ws, _) = tokio_tungstenite::connect_async(request).await?;
+            .insert("origin", HeaderValue::from_static(TROUTER_ORIGIN));
+        let ws = match tokio_tungstenite::connect_async(request).await {
+            Ok((ws, _)) => ws,
+            Err(e) => {
+                // A reconnect url we cannot even dial would trap us in a retry loop.
+                if reconnect.is_some() {
+                    self.set_trouter_reconnect_url(None);
+                }
+                return Err(e.into());
+            }
+        };
         let (mut write, mut read) = ws.split();
 
-        let mut ping = tokio::time::interval(Duration::from_secs(30));
-        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        ping.tick().await; // consume the immediate first tick so we don't ping before auth
-        let mut cmd_count: u64 = 0;
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        heartbeat.tick().await; // consume the immediate first tick
+        let mut connected = false;
 
         // Force a clean reconnect every few hours so tokens + the registrar
         // subscription are refreshed on a long-lived session.
@@ -175,10 +129,10 @@ impl TeamsClient {
         loop {
             tokio::select! {
                 _ = &mut max_session => { break; }
-                _ = ping.tick() => {
-                    cmd_count += 1;
-                    let f = format!("5:{}+::{{\"name\":\"ping\"}}", cmd_count);
-                    if write.send(WsMessage::Text(f.into())).await.is_err() { break; }
+                _ = heartbeat.tick() => {
+                    // Nothing to keep alive until the service says the session is up.
+                    if !connected { continue; }
+                    if write.send(WsMessage::Text("2::".into())).await.is_err() { break; }
                 }
                 frame = read.next() => {
                     let frame = match frame {
@@ -196,47 +150,69 @@ impl TeamsClient {
                         let head: String = txt.chars().take(160).collect();
                         eprintln!("[trouter] <- {head}");
                     }
-                    match txt.as_bytes()[0] {
-                        b'1' => {
-                            // connected: authenticate over the socket, then register via HTTP
-                            let mut auth_args = json!({
-                                "headers": {
-                                    "X-Ms-Test-User": "False",
-                                    "Authorization": format!("Bearer {}", bearer.value),
-                                    "X-MS-Migration": "True"
-                                }
-                            });
-                            if !connectparams.is_null() {
-                                auth_args["connectparams"] = connectparams.clone();
+
+                    if txt.starts_with("1::") {
+                        let auth = json!({"name": "user.authenticate", "args": [{
+                            "headers": {
+                                "Authorization": format!("Bearer {}", bearer.value),
+                                "X-MS-Migration": "True"
                             }
-                            let auth = json!({"name": "user.authenticate", "args": [auth_args]});
-                            let _ = write.send(WsMessage::Text(format!("5:::{}", auth).into())).await;
-                            if let Err(e) = self.trouter_register(&skype.value, &bearer.value, &surl, &epid).await {
-                                tracing::warn!("registrar failed: {e}");
-                            }
+                        }]});
+                        let _ = write.send(WsMessage::Text(format!("5:::{auth}").into())).await;
+                    } else if txt.contains("trouter.connected") {
+                        if let Some(ack) = ack_frame(&txt, "[]") {
+                            let _ = write.send(WsMessage::Text(ack.into())).await;
                         }
-                        b'3' => {
-                            if let Some(payload) = after_nth_colon(&txt, 3) {
-                                if let Ok(req) = serde_json::from_str::<Value>(payload) {
-                                    // ack the request on the socket
-                                    let ack = json!({"id": req["id"], "status": 200, "body": ""});
-                                    let _ = write.send(WsMessage::Text(format!("3:::{}", ack).into())).await;
-                                    if let Some(ev) = parse_event(&req) {
-                                        if debug {
-                                            match &ev {
-                                                TrouterEvent::NewMessage(m) | TrouterEvent::MessageUpdate(m) => eprintln!("[trouter] msg from={} chat={} : {}", m.from, m.chat_id, m.content.chars().take(80).collect::<String>()),
-                                                other => eprintln!("[trouter] {other:?}"),
-                                            }
-                                        }
-                                        on_event(ev);
+                        connected = true;
+                        let data: Value = serde_json::from_str(frame_data(&txt)).unwrap_or(Value::Null);
+                        let args = &data["args"][0];
+                        self.set_trouter_reconnect_url(
+                            args["reconnectUrl"].as_str().filter(|u| !u.is_empty()).map(str::to_string),
+                        );
+                        match args["surl"].as_str() {
+                            Some(surl) => {
+                                if let Err(e) = self.trouter_register(&skype.value, &bearer.value, surl, &epid).await {
+                                    tracing::warn!("registrar failed: {e}");
+                                }
+                            }
+                            None => tracing::warn!("trouter.connected carried no surl"),
+                        }
+                    } else if txt.contains(r#""name":"ping""#) {
+                        if let Some(seq) = frame_seq(&txt) {
+                            let pong = format!(r#"6:::{seq}+["pong"]"#);
+                            let _ = write.send(WsMessage::Text(pong.into())).await;
+                        }
+                    } else if txt.starts_with("3:::") {
+                        if let Ok(req) = serde_json::from_str::<Value>(frame_data(&txt)) {
+                            // ack the request on the socket
+                            let ack = json!({"id": req["id"], "status": 200, "body": ""});
+                            let _ = write.send(WsMessage::Text(format!("3:::{ack}").into())).await;
+                            if let Some(ev) = parse_event(&req) {
+                                if debug {
+                                    match &ev {
+                                        TrouterEvent::NewMessage(m) | TrouterEvent::MessageUpdate(m) => eprintln!("[trouter] msg from={} chat={} : {}", m.from, m.chat_id, m.content.chars().take(80).collect::<String>()),
+                                        other => eprintln!("[trouter] {other:?}"),
                                     }
                                 }
+                                on_event(ev);
                             }
                         }
-                        _ => {}
+                    } else if txt.contains("message_loss") {
+                        if let Some(ack) = ack_frame(&txt, "[]") {
+                            let _ = write.send(WsMessage::Text(ack.into())).await;
+                        }
+                        if debug {
+                            eprintln!("[trouter] message_loss, a resync is needed");
+                        }
+                        on_event(TrouterEvent::MessageLoss);
                     }
                 }
             }
+        }
+
+        // The reconnect url never produced a session, so it is stale.
+        if reconnect.is_some() && !connected {
+            self.set_trouter_reconnect_url(None);
         }
         Ok(())
     }
@@ -287,18 +263,49 @@ impl TeamsClient {
     }
 }
 
-/// Return the substring after the nth ':' in a socket.io frame, or None.
-fn after_nth_colon(s: &str, n: usize) -> Option<&str> {
+/// Build the Trouter connect query. `ccid` is sent empty, as the web client does
+/// when it has no cluster affinity to ask for.
+fn connect_query(epid: &str, cor_id: &str, con_num: &str) -> String {
+    format!(
+        "tc={}&timeout=40&epid={}&ccid=&cor_id={}&con_num={}",
+        urlencoding::encode(TROUTER_TC),
+        urlencoding::encode(epid),
+        urlencoding::encode(cor_id),
+        urlencoding::encode(con_num)
+    )
+}
+
+/// A socket.io frame is `<type>:<seq>:<endpoint>:<data>`, and the data itself
+/// holds colons, so everything after the third one is the payload.
+fn frame_data(frame: &str) -> &str {
     let mut seen = 0;
-    for (i, c) in s.char_indices() {
+    for (i, c) in frame.char_indices() {
         if c == ':' {
             seen += 1;
-            if seen == n {
-                return Some(&s[i + 1..]);
+            if seen == 3 {
+                return &frame[i + 1..];
             }
         }
     }
-    None
+    ""
+}
+
+/// Sequence number of a frame, without the ack marker.
+fn frame_seq(frame: &str) -> Option<String> {
+    frame.split(':').nth(1).map(|seq| seq.replace('+', ""))
+}
+
+/// A trailing "+" on the sequence means the server waits for an ack.
+fn needs_ack(frame: &str) -> bool {
+    frame.split(':').nth(1).is_some_and(|seq| seq.contains('+'))
+}
+
+/// Ack for a frame that asks for one, carrying `args` as its payload.
+fn ack_frame(frame: &str, args: &str) -> Option<String> {
+    if !needs_ack(frame) {
+        return None;
+    }
+    Some(format!("6:::{}+{}", frame_seq(frame)?, args))
 }
 
 /// Decode a Trouter request `body` (string) into JSON, handling optional gzip+base64
@@ -616,6 +623,67 @@ mod tests {
             json!({"gp": B64.encode(r#"{"a":3}"#)}),
         );
         assert_eq!(decode_body(&req).unwrap()["a"], 3);
+    }
+
+    /// The real frame the service sends once the session is live. Its JSON body
+    /// is full of colons, which is what `frame_data` has to survive.
+    const CONNECTED: &str = r#"5:2+::{"name":"trouter.connected","args":[{"surl":"https://go-eu.trouter.teams.microsoft.com/v4/f/abc/","reconnectUrl":"wss://go-eu.trouter.teams.microsoft.com/v4/c/abc"}]}"#;
+
+    #[test]
+    fn reads_the_frame_sequence() {
+        assert_eq!(frame_seq(CONNECTED).as_deref(), Some("2"));
+        assert_eq!(frame_seq("5:11+::{}").as_deref(), Some("11"));
+        assert_eq!(frame_seq("3:::{\"id\":7}").as_deref(), Some(""));
+        assert_eq!(frame_seq("2::").as_deref(), Some(""));
+        assert_eq!(frame_seq("1").as_deref(), None);
+    }
+
+    #[test]
+    fn only_a_plus_asks_for_an_ack() {
+        assert!(needs_ack(CONNECTED));
+        assert!(needs_ack("5:9+::{\"name\":\"ping\"}"));
+        assert!(!needs_ack("3:::{\"id\":7}"));
+        assert!(!needs_ack("1::"));
+        assert!(!needs_ack("2::"));
+    }
+
+    #[test]
+    fn acks_only_the_frames_that_ask() {
+        assert_eq!(ack_frame(CONNECTED, "[]").as_deref(), Some("6:::2+[]"));
+        assert_eq!(
+            ack_frame("5:9+::{\"name\":\"ping\"}", r#"["pong"]"#).as_deref(),
+            Some(r#"6:::9+["pong"]"#)
+        );
+        assert_eq!(ack_frame("3:::{}", "[]"), None);
+    }
+
+    #[test]
+    fn frame_data_keeps_the_colons_of_the_payload() {
+        let data: Value = serde_json::from_str(frame_data(CONNECTED)).unwrap();
+        assert_eq!(data["name"], "trouter.connected");
+        assert_eq!(
+            data["args"][0]["reconnectUrl"],
+            "wss://go-eu.trouter.teams.microsoft.com/v4/c/abc"
+        );
+        assert_eq!(frame_data("3:::{\"id\":7}"), "{\"id\":7}");
+        assert_eq!(frame_data("2::"), "");
+        assert_eq!(frame_data("1"), "");
+    }
+
+    #[test]
+    fn builds_the_connect_query() {
+        let query = connect_query("epid-1", "cor-1", "1700000000000_0");
+        assert!(
+            query.ends_with("&timeout=40&epid=epid-1&ccid=&cor_id=cor-1&con_num=1700000000000_0")
+        );
+        let tc = query
+            .strip_prefix("tc=")
+            .and_then(|rest| rest.split('&').next())
+            .unwrap();
+        assert!(!tc.contains('{'), "tc must be url-encoded");
+        let decoded = urlencoding::decode(tc).unwrap();
+        let tc: Value = serde_json::from_str(&decoded).unwrap();
+        assert_eq!(tc["ua"], "TeamsCDL");
     }
 
     #[test]

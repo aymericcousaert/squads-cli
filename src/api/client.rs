@@ -55,6 +55,11 @@ pub struct TeamsClient {
     /// Tenant region, `None` until discovery lands. Readers fall back to the
     /// default, so no call has to wait for it.
     region: Arc<RwLock<Option<Region>>>,
+    /// Trouter endpoint id. Stable for the life of the client: a fresh one
+    /// registers a second endpoint with the service on every reconnect.
+    epid: String,
+    /// Trouter URL to reconnect through, as handed to us by the service.
+    trouter_reconnect_url: Arc<RwLock<Option<String>>>,
 }
 
 /// A file uploaded to OneDrive and shared, ready for a chat message to point at.
@@ -99,6 +104,8 @@ impl TeamsClient {
             cache,
             me: Arc::new(RwLock::new(None)),
             region: Arc::new(RwLock::new(region)),
+            epid: uuid::Uuid::new_v4().to_string(),
+            trouter_reconnect_url: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -214,9 +221,23 @@ impl TeamsClient {
 
     /// Region to build a URL with, probing first when we have not learned one.
     /// Never call it from `ensure_region`: the probe URL carries no region.
-    async fn regional(&self) -> Region {
+    pub(crate) async fn regional(&self) -> Region {
         self.ensure_region().await;
         self.region.read().unwrap().clone().unwrap_or_default()
+    }
+
+    /// Endpoint id Trouter and the registrar know us by.
+    pub(crate) fn trouter_epid(&self) -> &str {
+        &self.epid
+    }
+
+    /// Reconnect URL kept from the last session, if the service gave one.
+    pub(crate) fn trouter_reconnect_url(&self) -> Option<String> {
+        self.trouter_reconnect_url.read().unwrap().clone()
+    }
+
+    pub(crate) fn set_trouter_reconnect_url(&self, url: Option<String>) {
+        *self.trouter_reconnect_url.write().unwrap() = url;
     }
 
     /// The one place a region is learned. Takes any text holding Teams URLs:
