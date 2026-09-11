@@ -25,7 +25,7 @@ Search across both Mail and Calendar simultaneously.
   - **Direct to user**: Use `--to <name or email>` to send without knowing the chat ID:
     - `squads-cli chats send --to ada "Hello!"` (by first name)
     - `squads-cli chats send --to "Ada Fenwick" "Hello!"` (by full name)
-    - `squads-cli chats send --to john.doe@company.com "Hello!"` (by email)
+    - `squads-cli chats send --to ada.fenwick@acme.example "Hello!"` (by email)
   - Automatically finds existing 1:1 chat or creates a new one
   - If multiple users match, shows them and asks for more specific name/email
   - Support for `--markdown` and `--stdin`.

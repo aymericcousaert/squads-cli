@@ -4,7 +4,7 @@ use colored::Colorize;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::api::{TeamsClient, TrouterMessage};
+use crate::api::{TeamsClient, TrouterEvent};
 use crate::cli::utils::{strip_html, truncate};
 use crate::config::Config;
 
@@ -298,10 +298,22 @@ async fn watch_push(client: &TeamsClient, cmd: &WatchCommand) -> Result<()> {
         println!();
     }
 
+    let debug = std::env::var("SQUADS_TROUTER_DEBUG").is_ok();
     let mut backoff = 2u64;
     loop {
         let res = client
-            .trouter_listen(|m: TrouterMessage| {
+            .trouter_listen(|ev: TrouterEvent| {
+                // Other event kinds are parsed but not surfaced yet: the --json output is
+                // a stable contract for other tools.
+                let m = match ev {
+                    TrouterEvent::NewMessage(m) => m,
+                    other => {
+                        if debug {
+                            eprintln!("[watch] ignored event: {other:?}");
+                        }
+                        return;
+                    }
+                };
                 // skip our own messages
                 if let Some(mri) = &my_mri {
                     if &m.from_mri == mri {

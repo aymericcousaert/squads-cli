@@ -63,13 +63,13 @@ mod tests {
     /// holding JSON, not an array.
     const CHAT_JSON: &str = r#"{
         "id": "19:abc@thread.v2",
-        "members": [{"mri": "8:orgid:u1", "objectId": "u1", "displayName": "Ada"}],
+        "members": [{"mri": "8:orgid:u1", "objectId": "u1", "displayName": "Ada Fenwick"}],
         "isRead": false,
         "title": "Design",
         "lastMessage": {
             "content": "see attached",
             "from": "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/contacts/8:orgid:u1",
-            "imdisplayname": "Ada",
+            "imdisplayname": "Ada Fenwick",
             "properties": {
                 "files": "[{\"fileName\":\"spec.pdf\",\"fileInfo\":{}}]"
             }
@@ -112,7 +112,7 @@ mod tests {
         let back: Chat = serde_json::from_str(&json).expect("cached chat should read back");
         assert_eq!(back.id, "19:abc@thread.v2");
         assert_eq!(back.is_read, Some(false));
-        assert_eq!(back.members[0].display_name.as_deref(), Some("Ada"));
+        assert_eq!(back.members[0].display_name.as_deref(), Some("Ada Fenwick"));
     }
 
     /// A 1:1 chat with an app has no title and no member names, so the cached
