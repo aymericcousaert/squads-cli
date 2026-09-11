@@ -99,3 +99,4 @@ pub const TEAMS_FILE: &str = "teams.json";
 pub const CHATS_FILE: &str = "chats.json";
 pub const USERS_FILE: &str = "users.json";
 pub const ME_FILE: &str = "me.json";
+pub const REGION_FILE: &str = "region.json";

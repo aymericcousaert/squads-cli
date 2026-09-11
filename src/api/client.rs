@@ -6,11 +6,12 @@ use anyhow::{anyhow, Context, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Client;
 
+use super::region::{self, Region};
 use super::{
     gen_skype_token, gen_token, renew_refresh_token, SCOPE_CHATSVCAGG, SCOPE_GRAPH, SCOPE_IC3,
     SCOPE_SPACES,
 };
-use crate::cache::{Cache, TOKENS_FILE};
+use crate::cache::{Cache, REGION_FILE, TOKENS_FILE};
 use crate::config::Config;
 use crate::types::*;
 
@@ -51,6 +52,9 @@ pub struct TeamsClient {
     /// Own profile, kept after the first lookup. Sending a message needs it,
     /// and re-fetching it added a Graph round trip to every send.
     me: Arc<RwLock<Option<Profile>>>,
+    /// Tenant region, `None` until discovery lands. Readers fall back to the
+    /// default, so no call has to wait for it.
+    region: Arc<RwLock<Option<Region>>>,
 }
 
 /// A file uploaded to OneDrive and shared, ready for a chat message to point at.
@@ -82,6 +86,9 @@ impl TeamsClient {
     pub fn new(config: &Config) -> Result<Self> {
         let cache = Cache::new()?;
         let tokens: TokenStore = cache.load(TOKENS_FILE)?.unwrap_or_default();
+        let env_region = region::env_region();
+        let persisted: Option<String> = cache.load(REGION_FILE).unwrap_or_default();
+        let region = region::initial_region(env_region.as_deref(), persisted.as_deref());
 
         Ok(Self {
             tokens: Arc::new(RwLock::new(tokens)),
@@ -91,6 +98,7 @@ impl TeamsClient {
                 .build()?,
             cache,
             me: Arc::new(RwLock::new(None)),
+            region: Arc::new(RwLock::new(region)),
         })
     }
 
@@ -120,6 +128,10 @@ impl TeamsClient {
             let mut tokens = self.tokens.write().unwrap();
             tokens.tokens.clear();
         }
+        // The next login may be a tenant in another region, so discover again.
+        *self.region.write().unwrap() =
+            region::initial_region(region::env_region().as_deref(), None);
+        let _ = self.cache.delete(REGION_FILE);
         self.cache.delete(TOKENS_FILE)
     }
 
@@ -200,10 +212,57 @@ impl TeamsClient {
         Ok(new_token)
     }
 
+    /// Region to build a URL with, probing first when we have not learned one.
+    /// Never call it from `ensure_region`: the probe URL carries no region.
+    async fn regional(&self) -> Region {
+        self.ensure_region().await;
+        self.region.read().unwrap().clone().unwrap_or_default()
+    }
+
+    /// The one place a region is learned. Takes any text holding Teams URLs:
+    /// a redirect target, or a payload full of conversation links.
+    fn observe_region(&self, text: &str) {
+        if self.region.read().unwrap().is_some() {
+            return;
+        }
+        let Some(found) = region::extract_region_from_url(text) else {
+            return;
+        };
+        *self.region.write().unwrap() = Some(found.clone());
+        // Losing the write only costs one probe on the next run.
+        let _ = self.cache.save(REGION_FILE, &found.name().to_string());
+    }
+
+    /// Ask the region-less csa endpoint who we are. Teams answers with a
+    /// redirect naming the tenant's region. A failure is not fatal.
+    async fn ensure_region(&self) {
+        if self.region.read().unwrap().is_some() {
+            return;
+        }
+        let Ok(token) = self.get_token(SCOPE_CHATSVCAGG).await else {
+            return;
+        };
+        let res = self
+            .http
+            .get(region::CSA_PROBE_URL)
+            .header("authorization", format!("Bearer {}", token.value))
+            .send()
+            .await;
+        if let Ok(res) = res {
+            if let Some(location) = res
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+            {
+                self.observe_region(location);
+            }
+        }
+    }
+
     /// Get current user's teams and chats
     pub async fn get_user_details(&self) -> Result<UserDetails> {
         let token = self.get_token(SCOPE_CHATSVCAGG).await?;
-        let url = "https://teams.microsoft.com/api/csa/emea/api/v2/teams/users/me";
+        let url = format!("{}/users/me", self.regional().await.csa_base());
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -225,6 +284,8 @@ impl TeamsClient {
 
         if res.status().is_success() {
             let body = res.text().await?;
+            // Chat payloads carry regional links, so this covers a failed probe.
+            self.observe_region(&body);
             serde_json::from_str(&body).context("Failed to parse user details")
         } else {
             let status = res.status();
@@ -387,7 +448,8 @@ impl TeamsClient {
         let horizon = format!("{};0;{}", now, last_message_id.unwrap_or(&fallback));
 
         let url = format!(
-            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/properties?name=consumptionhorizon",
+            "{}/conversations/{}/properties?name=consumptionhorizon",
+            self.regional().await.chatsvc_base(),
             chat_id
         );
 
@@ -468,7 +530,8 @@ impl TeamsClient {
         };
 
         let url = format!(
-            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages?pageSize=200",
+            "{}/conversations/{}/messages?pageSize=200",
+            self.regional().await.chatsvc_base(),
             thread_part
         );
 
@@ -502,8 +565,10 @@ impl TeamsClient {
     ) -> Result<TeamConversations> {
         let token = self.get_token(SCOPE_CHATSVCAGG).await?;
         let url = format!(
-            "https://teams.microsoft.com/api/csa/emea/api/v2/teams/{}/channels/{}",
-            team_id, channel_id
+            "{}/{}/channels/{}",
+            self.regional().await.csa_base(),
+            team_id,
+            channel_id
         );
 
         let mut headers = HeaderMap::new();
@@ -696,7 +761,8 @@ impl TeamsClient {
 
         // Use the channel ID as the conversation ID for the Teams internal API
         let url = format!(
-            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages",
+            "{}/conversations/{}/messages",
+            self.regional().await.chatsvc_base(),
             channel_id
         );
 
@@ -793,7 +859,8 @@ impl TeamsClient {
         // The thread ID format is: {channel_id};messageid={root_message_id}
         let thread_id = format!("{};messageid={}", channel_id, root_message_id);
         let url = format!(
-            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages",
+            "{}/conversations/{}/messages",
+            self.regional().await.chatsvc_base(),
             thread_id
         );
 
@@ -1094,7 +1161,8 @@ impl TeamsClient {
         let me = self.get_me().await?;
 
         let url = format!(
-            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages",
+            "{}/conversations/{}/messages",
+            self.regional().await.chatsvc_base(),
             conversation_id
         );
 
@@ -1228,8 +1296,10 @@ impl TeamsClient {
     pub async fn delete_message(&self, conversation_id: &str, message_id: &str) -> Result<()> {
         let token = self.get_token(SCOPE_IC3).await?;
         let url = format!(
-            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages/{}",
-            conversation_id, message_id
+            "{}/conversations/{}/messages/{}",
+            self.regional().await.chatsvc_base(),
+            conversation_id,
+            message_id
         );
 
         let mut headers = HeaderMap::new();
@@ -1258,8 +1328,10 @@ impl TeamsClient {
     ) -> Result<()> {
         let token = self.get_token(SCOPE_IC3).await?;
         let url = format!(
-            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages/{}",
-            channel_id, message_id
+            "{}/conversations/{}/messages/{}",
+            self.regional().await.chatsvc_base(),
+            channel_id,
+            message_id
         );
 
         let mut headers = HeaderMap::new();
@@ -1445,8 +1517,10 @@ impl TeamsClient {
 
         // Use teams.cloud.microsoft endpoint (same as web client)
         let url = format!(
-            "https://teams.cloud.microsoft/api/chatsvc/emea/v1/users/ME/conversations/{}/messages/{}/properties?name=emotions",
-            encoded_channel_id, message_id
+            "{}/conversations/{}/messages/{}/properties?name=emotions",
+            self.regional().await.chatsvc_cloud_base(),
+            encoded_channel_id,
+            message_id
         );
 
         let mut headers = HeaderMap::new();

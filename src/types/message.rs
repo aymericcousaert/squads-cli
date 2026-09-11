@@ -224,20 +224,13 @@ pub struct Message {
     pub container_id: Option<String>,
 }
 
+/// Same as `strip_url`: keep the MRI, drop whatever regional URL wraps it.
 fn strip_url_opt<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let opt = Option::<String>::deserialize(deserializer)?;
-    Ok(opt.map(|url| {
-        let pass1 = url
-            .strip_prefix("https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/contacts/")
-            .unwrap_or(&url);
-        pass1
-            .strip_prefix("https://notifications.skype.net/v1/users/ME/contacts/")
-            .unwrap_or(pass1)
-            .to_string()
-    }))
+    Ok(opt.map(|url| super::last_segment(&url).to_string()))
 }
 
 /// Conversations response
@@ -298,4 +291,40 @@ pub struct GraphChat {
     pub created_date_time: Option<String>,
     pub chat_type: Option<String>,
     pub web_url: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn from_mri(url: &str) -> Option<String> {
+        let json = format!(r#"{{"from":"{url}"}}"#);
+        serde_json::from_str::<Message>(&json)
+            .expect("payload should parse")
+            .from
+    }
+
+    #[test]
+    fn message_from_keeps_the_mri_whatever_the_region() {
+        for region in ["emea", "amer", "apac"] {
+            let url = format!(
+                "https://teams.microsoft.com/api/chatsvc/{region}/v1/users/ME/contacts/8:orgid:u1"
+            );
+            assert_eq!(from_mri(&url).as_deref(), Some("8:orgid:u1"));
+        }
+    }
+
+    #[test]
+    fn message_from_handles_notifications_hosts_and_bare_mris() {
+        assert_eq!(
+            from_mri("https://emea.notifications.skype.net/v1/users/ME/contacts/8:orgid:u1")
+                .as_deref(),
+            Some("8:orgid:u1")
+        );
+        assert_eq!(
+            from_mri("https://notifications.skype.net/v1/users/ME/contacts/8:orgid:u1").as_deref(),
+            Some("8:orgid:u1")
+        );
+        assert_eq!(from_mri("8:orgid:u1").as_deref(), Some("8:orgid:u1"));
+    }
 }

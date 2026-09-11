@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod client;
 pub mod emoji;
+pub mod region;
 pub mod trouter;
 
 pub use auth::*;
