@@ -34,7 +34,7 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-use super::{TeamsClient, SCOPE_IC3};
+use super::{TeamsClient, SCOPE_IC3, SCOPE_PRESENCE};
 
 /// Client descriptor the service expects in the connect query.
 const TROUTER_TC: &str = r#"{"cv":"2026.07.01.1","ua":"TeamsCDL","hr":"","v":"0.1.0"}"#;
@@ -52,6 +52,12 @@ const REGISTRATION_TTL: u64 = 3600;
 /// Re-register twice per lifetime. A lapsed registration stops events while the
 /// socket stays up, so the session would look healthy and deliver nothing.
 const REGISTER_REFRESH: Duration = Duration::from_secs(REGISTRATION_TTL / 2);
+
+/// Web client build the services expect to see.
+const CLIENT_VERSION: &str = "1415/26022704215";
+
+/// Path the presence service pushes to, under the session `surl`.
+const PRESENCE_PATH: &str = "unifiedPresenceService";
 
 /// A chat message delivered over Trouter.
 #[derive(Debug, Clone)]
@@ -157,7 +163,6 @@ impl TeamsClient {
         heartbeat.tick().await; // consume the immediate first tick
         let mut connected = false;
         let mut clean = false;
-        let mut surl: Option<String> = None;
 
         let mut refresh = tokio::time::interval(REGISTER_REFRESH);
         refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -173,9 +178,9 @@ impl TeamsClient {
                 _ = &mut max_session => { clean = true; break; }
                 _ = refresh.tick() => {
                     // The bearer we connected with has expired by now, so take a fresh one.
-                    if let Some(path) = surl.as_deref() {
+                    if let Some(path) = self.trouter_surl() {
                         match self.get_token(SCOPE_IC3).await {
-                            Ok(t) => match self.trouter_register(&t.value, path, &epid).await {
+                            Ok(t) => match self.trouter_register(&t.value, &path, &epid).await {
                                 Ok(()) => if debug { eprintln!("[trouter] registration refreshed"); },
                                 Err(e) => tracing::warn!("registrar refresh failed: {e}"),
                             },
@@ -231,7 +236,9 @@ impl TeamsClient {
                                 if let Err(e) = self.trouter_register(&bearer.value, path, &epid).await {
                                     tracing::warn!("registrar failed: {e}");
                                 }
-                                surl = Some(path.to_string());
+                                self.set_trouter_surl(Some(path.to_string()));
+                                // The old endpoint took its subscription with it.
+                                self.send_presence_subscription().await;
                                 refresh.reset();
                             }
                             None => tracing::warn!("trouter.connected carried no surl"),
@@ -250,7 +257,7 @@ impl TeamsClient {
                             // ack the request on the socket
                             let ack = json!({"id": req["id"], "status": 200, "body": ""});
                             let _ = write.send(WsMessage::Text(format!("3:::{ack}").into())).await;
-                            if let Some(ev) = parse_event(&req) {
+                            for ev in parse_event(&req) {
                                 if debug {
                                     match &ev {
                                         TrouterEvent::NewMessage(m) | TrouterEvent::MessageUpdate(m) => eprintln!("[trouter] msg from={} chat={} : {}", m.from, m.chat_id, m.content.chars().take(80).collect::<String>()),
@@ -277,6 +284,7 @@ impl TeamsClient {
         if reconnect.is_some() && !connected {
             self.set_trouter_reconnect_url(None);
         }
+        self.set_trouter_surl(None);
         Ok(session_end(connected, clean))
     }
 
@@ -291,7 +299,7 @@ impl TeamsClient {
                 "languageId": "en-US",
                 "platform": "chrome",
                 "templateKey": "TeamsCDLWebWorker_2.6",
-                "platformUIVersion": "1415/26022704215"
+                "platformUIVersion": CLIENT_VERSION
             },
             "registrationId": epid,
             "nodeId": "",
@@ -318,6 +326,77 @@ impl TeamsClient {
         }
         Ok(())
     }
+
+    /// Ask the presence service to push availability changes for `user_ids`.
+    /// The list is kept, so a reconnect re-sends it against the new endpoint.
+    /// Call it any time: with no live session it takes effect on the next one.
+    pub async fn subscribe_presence(&self, user_ids: Vec<String>) {
+        self.set_presence_users(user_ids);
+        self.send_presence_subscription().await;
+    }
+
+    /// Post the stored subscription for the live session, if there is one. A
+    /// failure only costs presence, so the socket carries on either way.
+    async fn send_presence_subscription(&self) {
+        let users = self.presence_users();
+        let Some(surl) = self.trouter_surl() else {
+            return;
+        };
+        if users.is_empty() {
+            return;
+        }
+        if let Err(e) = self.post_presence_subscription(&surl, &users).await {
+            tracing::warn!("presence subscription failed: {e}");
+        } else if std::env::var("SQUADS_TROUTER_DEBUG").is_ok() {
+            eprintln!("[trouter] presence subscribed for {} users", users.len());
+        }
+    }
+
+    async fn post_presence_subscription(&self, surl: &str, user_ids: &[String]) -> Result<()> {
+        let token = self.get_token(SCOPE_PRESENCE).await?;
+        let epid = self.trouter_epid().to_string();
+        let url = self.regional().await.ups_subscription_url(&epid);
+        let body = presence_subscription_body(&presence_trouter_uri(surl), user_ids);
+        let res = self
+            .http
+            .post(url)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {}", token.value))
+            .header("x-ms-client-user-agent", "Teams-V2-Web")
+            .header("x-ms-client-version", CLIENT_VERSION)
+            .header("x-ms-client-type", "cdlworker")
+            .header("x-ms-endpoint-id", &epid)
+            .header("x-ms-correlation-id", uuid::Uuid::new_v4().to_string())
+            .body(body.to_string())
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            let s = res.status();
+            return Err(anyhow!("presence subscription returned {s}"));
+        }
+        Ok(())
+    }
+}
+
+/// Where the presence service should push, given the session `surl`. The surl
+/// may or may not end in a slash, and a doubled one is not the same path.
+fn presence_trouter_uri(surl: &str) -> String {
+    format!("{}/{}", surl.trim_end_matches('/'), PRESENCE_PATH)
+}
+
+/// Body of a presence subscription. Purging first keeps a reconnect from
+/// stacking a second subscription on the same endpoint.
+fn presence_subscription_body(trouter_uri: &str, user_ids: &[String]) -> Value {
+    let add: Vec<Value> = user_ids
+        .iter()
+        .map(|id| json!({"mri": format!("8:orgid:{id}"), "source": "ups"}))
+        .collect();
+    json!({
+        "trouterUri": trouter_uri,
+        "shouldPurgePreviousSubscriptions": true,
+        "subscriptionsToAdd": add,
+        "subscriptionsToRemove": [],
+    })
 }
 
 /// Build the Trouter connect query. `ccid` is sent empty, as the web client does
@@ -398,12 +477,20 @@ fn gunzip_b64(s: &str) -> Option<String> {
     Some(out)
 }
 
-/// Turn a request envelope into an event, or None if we do not handle it.
-fn parse_event(req: &Value) -> Option<TrouterEvent> {
-    let url = req["url"].as_str()?;
-    if url.contains("unifiedPresenceService") {
+/// Turn a request envelope into the events it carries. Empty when we do not
+/// handle it. One frame can hold several, which presence frames do.
+fn parse_event(req: &Value) -> Vec<TrouterEvent> {
+    let Some(url) = req["url"].as_str() else {
+        return Vec::new();
+    };
+    if url.contains(PRESENCE_PATH) {
         return parse_presence(req);
     }
+    parse_messaging(req, url).into_iter().collect()
+}
+
+/// Turn a /messaging envelope into its single event.
+fn parse_messaging(req: &Value, url: &str) -> Option<TrouterEvent> {
     if !url.ends_with("/messaging") {
         log_unhandled(url, "not a messaging url");
         return None;
@@ -488,12 +575,20 @@ fn parse_message(resource: &Value, chat_id: String) -> TrouterMessage {
     }
 }
 
-/// Extract an availability change from a unifiedPresenceService envelope.
-fn parse_presence(req: &Value) -> Option<TrouterEvent> {
-    let body = decode_body(req)?;
-    // A frame can carry several users. We do not send presence subscriptions yet,
-    // so the first entry is all we get; widen this when we do.
-    let entry = body["presence"].as_array()?.first()?;
+/// Extract every availability change from a unifiedPresenceService envelope.
+/// One frame covers as many users as the service batched together.
+fn parse_presence(req: &Value) -> Vec<TrouterEvent> {
+    let Some(body) = decode_body(req) else {
+        return Vec::new();
+    };
+    let Some(entries) = body["presence"].as_array() else {
+        return Vec::new();
+    };
+    entries.iter().filter_map(presence_entry).collect()
+}
+
+/// One entry of a presence frame, skipped when it names no user or no state.
+fn presence_entry(entry: &Value) -> Option<TrouterEvent> {
     let mri = entry["mri"].as_str()?;
     let user_id = mri.strip_prefix("8:orgid:").unwrap_or(mri);
     let availability = entry["presence"]["availability"].as_str()?;
@@ -543,6 +638,13 @@ mod tests {
         )
     }
 
+    /// Most frames carry exactly one event, so the tests read better asserting
+    /// on that one rather than on a vector.
+    fn one(req: &Value) -> Option<TrouterEvent> {
+        let mut events = parse_event(req);
+        (events.len() == 1).then(|| events.remove(0))
+    }
+
     fn gzip_b64(s: &str) -> String {
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         enc.write_all(s.as_bytes()).unwrap();
@@ -562,7 +664,7 @@ mod tests {
                 "content": "<p>hello</p>",
             }),
         );
-        match parse_event(&req) {
+        match one(&req) {
             Some(TrouterEvent::NewMessage(m)) => {
                 assert_eq!(m.chat_id, "19:abc123@thread.v2");
                 assert_eq!(m.from_mri, "8:orgid:u1");
@@ -586,7 +688,7 @@ mod tests {
                 "content": "<p>edited</p>",
             }),
         );
-        match parse_event(&req) {
+        match one(&req) {
             Some(TrouterEvent::MessageUpdate(m)) => {
                 assert_eq!(m.chat_id, "19:abc123@thread.v2");
                 assert_eq!(m.content, "<p>edited</p>");
@@ -604,7 +706,7 @@ mod tests {
                 "conversationLink": LINK,
             }),
         );
-        match parse_event(&req) {
+        match one(&req) {
             Some(TrouterEvent::ReadHorizon { chat_id }) => {
                 assert_eq!(chat_id, "19:abc123@thread.v2")
             }
@@ -622,7 +724,7 @@ mod tests {
                 "imdisplayname": "Ada Fenwick",
             }),
         );
-        match parse_event(&req) {
+        match one(&req) {
             Some(TrouterEvent::Typing { chat_id, from }) => {
                 assert_eq!(chat_id, "19:abc123@thread.v2");
                 assert_eq!(from, "Ada Fenwick");
@@ -640,7 +742,7 @@ mod tests {
                 "presence": {"availability": "Available"}
             }]}),
         );
-        match parse_event(&req) {
+        match one(&req) {
             Some(TrouterEvent::Presence {
                 user_id,
                 availability,
@@ -653,12 +755,95 @@ mod tests {
     }
 
     #[test]
+    fn a_presence_frame_yields_one_event_per_user() {
+        let req = envelope(
+            "https://trouter.teams.microsoft.com/v4/f/x/unifiedPresenceService",
+            json!({"presence": [
+                {"mri": "8:orgid:u1", "presence": {"availability": "Available"}},
+                {"mri": "8:orgid:u2", "presence": {"availability": "Busy"}},
+                // no availability: the service sends these, and they say nothing
+                {"mri": "8:orgid:u3", "presence": {}},
+                {"mri": "8:orgid:u4", "presence": {"availability": "Away"}},
+            ]}),
+        );
+        let seen: Vec<(String, String)> = parse_event(&req)
+            .into_iter()
+            .map(|ev| match ev {
+                TrouterEvent::Presence {
+                    user_id,
+                    availability,
+                } => (user_id, availability),
+                other => panic!("expected Presence, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("u1".to_string(), "Available".to_string()),
+                ("u2".to_string(), "Busy".to_string()),
+                ("u4".to_string(), "Away".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_presence_frame_yields_nothing() {
+        let url = "https://trouter.teams.microsoft.com/v4/f/x/unifiedPresenceService";
+        assert!(parse_event(&envelope(url, json!({"presence": []}))).is_empty());
+        assert!(parse_event(&envelope(url, json!({"a": 1}))).is_empty());
+    }
+
+    #[test]
+    fn builds_the_presence_subscription_body() {
+        let body = presence_subscription_body(
+            "https://go-eu.trouter.teams.microsoft.com/v4/f/abc/unifiedPresenceService",
+            &["u1".to_string(), "u2".to_string()],
+        );
+        assert_eq!(
+            serde_json::to_string(&body).unwrap(),
+            r#"{"shouldPurgePreviousSubscriptions":true,"subscriptionsToAdd":[{"mri":"8:orgid:u1","source":"ups"},{"mri":"8:orgid:u2","source":"ups"}],"subscriptionsToRemove":[],"trouterUri":"https://go-eu.trouter.teams.microsoft.com/v4/f/abc/unifiedPresenceService"}"#
+        );
+    }
+
+    #[test]
+    fn an_empty_subscription_still_purges() {
+        let body = presence_subscription_body("https://x/unifiedPresenceService", &[]);
+        assert_eq!(body["shouldPurgePreviousSubscriptions"], true);
+        assert_eq!(body["subscriptionsToAdd"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn the_presence_uri_never_doubles_the_slash() {
+        let want = "https://go-eu.trouter.teams.microsoft.com/v4/f/abc/unifiedPresenceService";
+        assert_eq!(
+            presence_trouter_uri("https://go-eu.trouter.teams.microsoft.com/v4/f/abc/"),
+            want
+        );
+        assert_eq!(
+            presence_trouter_uri("https://go-eu.trouter.teams.microsoft.com/v4/f/abc"),
+            want
+        );
+    }
+
+    /// The url we subscribe with is the url the events come back on, so the
+    /// parser has to recognise what the subscription asked for.
+    #[test]
+    fn the_subscribed_uri_is_routed_back_to_presence() {
+        let surl = "https://go-eu.trouter.teams.microsoft.com/v4/f/abc/";
+        let req = envelope(
+            &presence_trouter_uri(surl),
+            json!({"presence": [{"mri": "8:orgid:u1", "presence": {"availability": "Available"}}]}),
+        );
+        assert!(matches!(one(&req), Some(TrouterEvent::Presence { .. })));
+    }
+
+    #[test]
     fn ignores_unknown_resource() {
         let req = messaging(
             "ConversationUpdate",
             json!({"messagetype": "ThreadActivity/AddMember", "conversationLink": LINK}),
         );
-        assert!(parse_event(&req).is_none());
+        assert!(parse_event(&req).is_empty());
     }
 
     #[test]
@@ -667,7 +852,7 @@ mod tests {
             "https://trouter.teams.microsoft.com/v4/f/x/callingMessages",
             json!({"resourceType": "NewMessage"}),
         );
-        assert!(parse_event(&req).is_none());
+        assert!(parse_event(&req).is_empty());
     }
 
     #[test]

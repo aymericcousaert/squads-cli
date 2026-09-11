@@ -7,6 +7,7 @@ use std::time::Duration;
 use crate::api::{SessionEnd, TeamsClient, TrouterEvent, TrouterMessage};
 use crate::cli::utils::{strip_html, truncate};
 use crate::config::Config;
+use crate::types::UserDetails;
 
 #[derive(Args, Debug)]
 pub struct WatchCommand {
@@ -316,6 +317,12 @@ async fn watch_push(client: &TeamsClient, cmd: &WatchCommand) -> Result<()> {
         eprintln!("note: --events shapes the --json stream only");
     }
 
+    // Presence only arrives for users we asked for, so nothing is subscribed
+    // unless the stream carries presence.
+    if cmd.json && wants(&cmd.events, WatchEvent::Presence) {
+        subscribe_presence(client, my_mri.as_deref()).await;
+    }
+
     // Message ids already delivered this session. See the dedup step below.
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -433,6 +440,62 @@ async fn watch_push(client: &TeamsClient, cmd: &WatchCommand) -> Result<()> {
             tokio::time::sleep(Duration::from_secs(wait)).await;
         }
     }
+}
+
+/// How many users one presence subscription covers. Teams sends a frame per
+/// change, so a long list is a lot of traffic for little gain.
+const PRESENCE_MAX_USERS: usize = 100;
+
+/// Subscribe to the presence of the people we chat with. The client re-sends
+/// the list after every reconnect, so this runs once.
+async fn subscribe_presence(client: &TeamsClient, my_mri: Option<&str>) {
+    let details = match client.get_user_details().await {
+        Ok(details) => details,
+        Err(e) => {
+            eprintln!("note: presence subscription skipped, no chat list: {e}");
+            return;
+        }
+    };
+    let users = presence_user_ids(&details, my_mri, PRESENCE_MAX_USERS);
+    if users.is_empty() {
+        eprintln!("note: no one to subscribe to, presence will stay silent");
+        return;
+    }
+    client.subscribe_presence(users).await;
+}
+
+/// Users to watch, one-on-one partners first: those are the ones a client shows
+/// a presence dot next to. Group members fill whatever room is left.
+fn presence_user_ids(details: &UserDetails, my_mri: Option<&str>, cap: usize) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for one_on_one in [true, false] {
+        for chat in &details.chats {
+            if chat.is_conversation_deleted == Some(true) {
+                continue;
+            }
+            if chat.is_one_on_one.unwrap_or(false) != one_on_one {
+                continue;
+            }
+            for member in &chat.members {
+                if Some(member.mri.as_str()) == my_mri {
+                    continue;
+                }
+                // Presence is an org service: a federated or bot mri has none.
+                let Some(id) = member.mri.strip_prefix("8:orgid:") else {
+                    continue;
+                };
+                if id.is_empty() || !seen.insert(id.to_string()) {
+                    continue;
+                }
+                ids.push(id.to_string());
+                if ids.len() == cap {
+                    return ids;
+                }
+            }
+        }
+    }
+    ids
 }
 
 /// True when the stream was asked for this kind.
@@ -685,6 +748,68 @@ mod tests {
             }),
             None
         );
+    }
+
+    fn chat(id: &str, one_on_one: bool, mris: &[&str]) -> crate::types::Chat {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "isOneOnOne": one_on_one,
+            "members": mris.iter().map(|mri| serde_json::json!({"mri": mri})).collect::<Vec<_>>(),
+        }))
+        .unwrap()
+    }
+
+    fn details(chats: Vec<crate::types::Chat>) -> UserDetails {
+        UserDetails {
+            teams: Vec::new(),
+            chats,
+        }
+    }
+
+    #[test]
+    fn presence_takes_one_on_one_partners_first() {
+        let details = details(vec![
+            chat("19:g@thread.v2", false, &["8:orgid:me", "8:orgid:u3"]),
+            chat("19:a@unq.gbl.spaces", true, &["8:orgid:me", "8:orgid:u1"]),
+            chat("19:b@unq.gbl.spaces", true, &["8:orgid:me", "8:orgid:u2"]),
+        ]);
+        assert_eq!(
+            presence_user_ids(&details, Some("8:orgid:me"), 10),
+            vec!["u1", "u2", "u3"]
+        );
+    }
+
+    #[test]
+    fn presence_skips_ourselves_duplicates_and_non_org_members() {
+        let details = details(vec![
+            chat("19:a@unq.gbl.spaces", true, &["8:orgid:me", "8:orgid:u1"]),
+            chat("19:b@unq.gbl.spaces", true, &["8:orgid:me", "8:orgid:u1"]),
+            chat("19:c@unq.gbl.spaces", true, &["8:live:outside", "28:bot"]),
+        ]);
+        assert_eq!(
+            presence_user_ids(&details, Some("8:orgid:me"), 10),
+            vec!["u1"]
+        );
+    }
+
+    #[test]
+    fn presence_stops_at_the_cap() {
+        let details = details(
+            (0..10)
+                .map(|i| {
+                    let mri = format!("8:orgid:u{i}");
+                    chat("19:x", true, &[mri.as_str()])
+                })
+                .collect(),
+        );
+        assert_eq!(presence_user_ids(&details, None, 3), vec!["u0", "u1", "u2"]);
+    }
+
+    #[test]
+    fn presence_ignores_deleted_chats() {
+        let mut deleted = chat("19:a@unq.gbl.spaces", true, &["8:orgid:u1"]);
+        deleted.is_conversation_deleted = Some(true);
+        assert!(presence_user_ids(&details(vec![deleted]), None, 10).is_empty());
     }
 
     #[test]

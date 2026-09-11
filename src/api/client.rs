@@ -60,6 +60,12 @@ pub struct TeamsClient {
     epid: String,
     /// Trouter URL to reconnect through, as handed to us by the service.
     trouter_reconnect_url: Arc<RwLock<Option<String>>>,
+    /// Base URL the current Trouter session listens on. A subscription has to
+    /// name it, and it changes with every session.
+    trouter_surl: Arc<RwLock<Option<String>>>,
+    /// Users we want presence for. A subscription dies with the endpoint, so the
+    /// list is kept and re-sent on every reconnect.
+    presence_users: Arc<RwLock<Vec<String>>>,
 }
 
 /// A file uploaded to OneDrive and shared, ready for a chat message to point at.
@@ -106,6 +112,8 @@ impl TeamsClient {
             region: Arc::new(RwLock::new(region)),
             epid: uuid::Uuid::new_v4().to_string(),
             trouter_reconnect_url: Arc::new(RwLock::new(None)),
+            trouter_surl: Arc::new(RwLock::new(None)),
+            presence_users: Arc::new(RwLock::new(Vec::new())),
         })
     }
 
@@ -238,6 +246,24 @@ impl TeamsClient {
 
     pub(crate) fn set_trouter_reconnect_url(&self, url: Option<String>) {
         *self.trouter_reconnect_url.write().unwrap() = url;
+    }
+
+    /// Base URL of the live Trouter session, `None` between sessions.
+    pub(crate) fn trouter_surl(&self) -> Option<String> {
+        self.trouter_surl.read().unwrap().clone()
+    }
+
+    pub(crate) fn set_trouter_surl(&self, surl: Option<String>) {
+        *self.trouter_surl.write().unwrap() = surl;
+    }
+
+    /// Users the presence subscription covers.
+    pub(crate) fn presence_users(&self) -> Vec<String> {
+        self.presence_users.read().unwrap().clone()
+    }
+
+    pub(crate) fn set_presence_users(&self, users: Vec<String>) {
+        *self.presence_users.write().unwrap() = users;
     }
 
     /// The one place a region is learned. Takes any text holding Teams URLs:
