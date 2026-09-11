@@ -31,6 +31,14 @@ pub struct Cli {
     pub command: Commands,
 }
 
+impl Cli {
+    /// True when stdout is a stream for a program, not a person.
+    pub fn machine_readable(&self) -> bool {
+        matches!(self.format, OutputFormat::Json)
+            || matches!(&self.command, Commands::Watch(cmd) if cmd.json)
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Authentication commands
@@ -92,4 +100,25 @@ pub enum OutputFormat {
     Table,
     /// Plain output (minimal, for scripting)
     Plain,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cli(args: &[&str]) -> Cli {
+        Cli::parse_from(args)
+    }
+
+    #[test]
+    fn a_json_stream_is_machine_readable() {
+        assert!(cli(&["squads-cli", "--format", "json", "chats", "list"]).machine_readable());
+        assert!(cli(&["squads-cli", "watch", "--json"]).machine_readable());
+    }
+
+    #[test]
+    fn terminal_output_is_not_machine_readable() {
+        assert!(!cli(&["squads-cli", "chats", "list"]).machine_readable());
+        assert!(!cli(&["squads-cli", "watch", "--push"]).machine_readable());
+    }
 }
