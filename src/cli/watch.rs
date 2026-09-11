@@ -4,7 +4,7 @@ use colored::Colorize;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::api::{TeamsClient, TrouterEvent};
+use crate::api::{SessionEnd, TeamsClient, TrouterEvent};
 use crate::cli::utils::{strip_html, truncate};
 use crate::config::Config;
 
@@ -299,7 +299,7 @@ async fn watch_push(client: &TeamsClient, cmd: &WatchCommand) -> Result<()> {
     }
 
     let debug = std::env::var("SQUADS_TROUTER_DEBUG").is_ok();
-    let mut backoff = 2u64;
+    let mut backoff = BACKOFF_MIN;
     loop {
         let res = client
             .trouter_listen(|ev: TrouterEvent| {
@@ -379,15 +379,77 @@ async fn watch_push(client: &TeamsClient, cmd: &WatchCommand) -> Result<()> {
             })
             .await;
 
-        match res {
-            Ok(()) => backoff = 2,
+        let end = match res {
+            Ok(end) => PushEnd::Session(end),
             Err(e) => {
                 eprintln!("push connection error: {e}");
+                if is_transport_error(&e) {
+                    PushEnd::Transport
+                } else {
+                    PushEnd::Failed
+                }
             }
+        };
+        let (wait, next) = next_backoff(backoff, end);
+        backoff = next;
+        if debug {
+            eprintln!("[watch] push session ended ({end:?}), reconnecting in {wait}s");
         }
-        tokio::time::sleep(Duration::from_secs(backoff)).await;
-        backoff = (backoff * 2).min(60);
+        if wait > 0 {
+            tokio::time::sleep(Duration::from_secs(wait)).await;
+        }
     }
+}
+
+/// First pause between push reconnects, in seconds.
+const BACKOFF_MIN: u64 = 1;
+
+/// Longest pause between push reconnects, in seconds.
+const BACKOFF_MAX: u64 = 60;
+
+/// A transport failure usually means the network is gone, so give it time.
+const BACKOFF_TRANSPORT_FLOOR: u64 = 5;
+
+/// Why a push session came back, as far as the retry loop cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PushEnd {
+    /// The session ran and ended. How far it got decides the pause.
+    Session(SessionEnd),
+    /// We could not reach the service at all.
+    Transport,
+    /// The service or a token refused us.
+    Failed,
+}
+
+/// Seconds to wait before the next connect, and the backoff to carry forward.
+fn next_backoff(backoff: u64, end: PushEnd) -> (u64, u64) {
+    let wait = match end {
+        // We asked for this close, so there is nothing to wait for.
+        PushEnd::Session(SessionEnd::Clean) => return (0, BACKOFF_MIN),
+        // The service was talking to us a moment ago. How long the last outage
+        // lasted says nothing about this one.
+        PushEnd::Session(SessionEnd::Live) => BACKOFF_MIN,
+        PushEnd::Session(SessionEnd::NeverLive) | PushEnd::Failed => backoff,
+        PushEnd::Transport => backoff.max(BACKOFF_TRANSPORT_FLOOR),
+    };
+    (wait, (wait * 2).min(BACKOFF_MAX))
+}
+
+/// True when we never reached the service: no DNS, no route, no TLS. A protocol
+/// or auth error is the service answering, and deserves the usual backoff.
+fn is_transport_error(err: &anyhow::Error) -> bool {
+    use tokio_tungstenite::tungstenite::error::UrlError;
+    use tokio_tungstenite::tungstenite::Error as WsError;
+    if let Some(e) = err.downcast_ref::<WsError>() {
+        return matches!(
+            e,
+            WsError::Io(_) | WsError::Tls(_) | WsError::Url(UrlError::UnableToConnect(_))
+        );
+    }
+    if let Some(e) = err.downcast_ref::<reqwest::Error>() {
+        return e.is_connect() || e.is_timeout();
+    }
+    false
 }
 
 fn send_notification(title: &str, body: &str, _category: &str) {
@@ -408,5 +470,65 @@ fn send_notification(title: &str, body: &str, _category: &str) {
             .body(body)
             .appname("squads-cli")
             .show();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ws_io_error() -> anyhow::Error {
+        tokio_tungstenite::tungstenite::Error::Io(std::io::Error::other("no such host")).into()
+    }
+
+    #[test]
+    fn a_clean_return_reconnects_at_once() {
+        assert_eq!(
+            next_backoff(32, PushEnd::Session(SessionEnd::Clean)),
+            (0, 1)
+        );
+    }
+
+    #[test]
+    fn a_live_session_resets_the_backoff() {
+        assert_eq!(next_backoff(32, PushEnd::Session(SessionEnd::Live)), (1, 2));
+    }
+
+    #[test]
+    fn a_session_that_never_came_up_backs_off() {
+        let steps: Vec<u64> = std::iter::successors(Some(BACKOFF_MIN), |b| {
+            Some(next_backoff(*b, PushEnd::Session(SessionEnd::NeverLive)).1)
+        })
+        .take(8)
+        .collect();
+        assert_eq!(steps, vec![1, 2, 4, 8, 16, 32, 60, 60]);
+    }
+
+    #[test]
+    fn a_transport_failure_waits_at_least_five_seconds() {
+        assert_eq!(next_backoff(1, PushEnd::Transport), (5, 10));
+        assert_eq!(next_backoff(32, PushEnd::Transport), (32, 60));
+    }
+
+    #[test]
+    fn a_refused_connect_keeps_the_plain_backoff() {
+        assert_eq!(next_backoff(4, PushEnd::Failed), (4, 8));
+    }
+
+    #[test]
+    fn only_unreachable_counts_as_transport() {
+        assert!(is_transport_error(&ws_io_error()));
+        assert!(!is_transport_error(&anyhow::anyhow!(
+            "registrar returned 401"
+        )));
+        assert!(!is_transport_error(
+            &tokio_tungstenite::tungstenite::Error::ConnectionClosed.into()
+        ));
+    }
+
+    #[test]
+    fn a_transport_failure_is_found_under_context() {
+        let err = ws_io_error().context("connecting to trouter");
+        assert!(is_transport_error(&err));
     }
 }

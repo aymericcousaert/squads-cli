@@ -8,7 +8,8 @@
 //   2. on frame "1::" (connected): send user.authenticate over the socket.
 //   3. the server answers with a "trouter.connected" frame carrying our `surl`:
 //      POST it to the registrar so message notifications are routed to us, and
-//      keep its `reconnectUrl` for the next connect.
+//      keep its `reconnectUrl` for the next connect. The registration expires,
+//      so we re-post it every half hour for as long as the session lasts.
 //   4. incoming events arrive as "3:::{id,method,url,headers,body}"; ack each with
 //      "3:::{id,status:200,body:\"\"}" and surface the ones we understand.
 //   5. a frame whose sequence field carries a "+" wants an ack: "6:::<seq>+[]".
@@ -30,15 +31,27 @@ use std::io::Read;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::{TeamsClient, SCOPE_IC3};
 
 /// Client descriptor the service expects in the connect query.
-const TROUTER_TC: &str = r#"{"cv":"2024.23.01.2","ua":"TeamsCDL","hr":"","v":"1.0.0"}"#;
+const TROUTER_TC: &str = r#"{"cv":"2026.07.01.1","ua":"TeamsCDL","hr":"","v":"0.1.0"}"#;
 
 /// Origin the service accepts a web-worker client from.
 const TROUTER_ORIGIN: &str = "https://teams.cloud.microsoft";
+
+/// Where a web client posts its trouter endpoint.
+const REGISTRAR_URL: &str = "https://teams.cloud.microsoft/registrar/prod/V2/registrations";
+
+/// Lifetime we ask the registrar for, in seconds. The web client asks for an hour
+/// and the service is free to shorten whatever we send.
+const REGISTRATION_TTL: u64 = 3600;
+
+/// Re-register twice per lifetime. A lapsed registration stops events while the
+/// socket stays up, so the session would look healthy and deliver nothing.
+const REGISTER_REFRESH: Duration = Duration::from_secs(REGISTRATION_TTL / 2);
 
 /// A chat message delivered over Trouter.
 #[derive(Debug, Clone)]
@@ -72,15 +85,38 @@ pub enum TrouterEvent {
     MessageLoss,
 }
 
+/// How a Trouter session ended. The caller reconnects either way, but a session
+/// that was live says nothing is wrong with the service, so it should not be made
+/// to wait as long as one that never came up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionEnd {
+    /// We ended the session on purpose, or the service closed it normally.
+    Clean,
+    /// The session was live and the socket then dropped.
+    Live,
+    /// The session never reached `trouter.connected`.
+    NeverLive,
+}
+
+/// A clean close only counts once the session was live. A service that hangs up
+/// on us straight away would otherwise spin the reconnect loop.
+fn session_end(connected: bool, clean: bool) -> SessionEnd {
+    match (connected, clean) {
+        (false, _) => SessionEnd::NeverLive,
+        (true, true) => SessionEnd::Clean,
+        (true, false) => SessionEnd::Live,
+    }
+}
+
 impl TeamsClient {
     /// Connect to Trouter and invoke `on_event` for each event we understand.
-    /// Returns when the connection closes or errors (caller may reconnect).
-    pub async fn trouter_listen<F>(&self, mut on_event: F) -> Result<()>
+    /// Returns when the connection closes or errors (caller may reconnect), and
+    /// says how far the session got.
+    pub async fn trouter_listen<F>(&self, mut on_event: F) -> Result<SessionEnd>
     where
         F: FnMut(TrouterEvent),
     {
         let debug = std::env::var("SQUADS_TROUTER_DEBUG").is_ok();
-        let skype = self.get_skype_token().await?;
         let bearer = self.get_token(SCOPE_IC3).await?;
         let epid = self.trouter_epid().to_string();
 
@@ -120,6 +156,12 @@ impl TeamsClient {
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         heartbeat.tick().await; // consume the immediate first tick
         let mut connected = false;
+        let mut clean = false;
+        let mut surl: Option<String> = None;
+
+        let mut refresh = tokio::time::interval(REGISTER_REFRESH);
+        refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        refresh.tick().await; // consume the immediate first tick
 
         // Force a clean reconnect every few hours so tokens + the registrar
         // subscription are refreshed on a long-lived session.
@@ -128,7 +170,19 @@ impl TeamsClient {
 
         loop {
             tokio::select! {
-                _ = &mut max_session => { break; }
+                _ = &mut max_session => { clean = true; break; }
+                _ = refresh.tick() => {
+                    // The bearer we connected with has expired by now, so take a fresh one.
+                    if let Some(path) = surl.as_deref() {
+                        match self.get_token(SCOPE_IC3).await {
+                            Ok(t) => match self.trouter_register(&t.value, path, &epid).await {
+                                Ok(()) => if debug { eprintln!("[trouter] registration refreshed"); },
+                                Err(e) => tracing::warn!("registrar refresh failed: {e}"),
+                            },
+                            Err(e) => tracing::warn!("registrar refresh got no token: {e}"),
+                        }
+                    }
+                }
                 _ = heartbeat.tick() => {
                     // Nothing to keep alive until the service says the session is up.
                     if !connected { continue; }
@@ -142,7 +196,10 @@ impl TeamsClient {
                     let txt = match frame {
                         WsMessage::Text(t) => t.as_str().to_string(),
                         WsMessage::Ping(p) => { let _ = write.send(WsMessage::Pong(p)).await; continue; }
-                        WsMessage::Close(_) => break,
+                        WsMessage::Close(f) => {
+                            clean = f.is_some_and(|f| f.code == CloseCode::Normal);
+                            break;
+                        }
                         _ => continue,
                     };
                     if txt.is_empty() { continue; }
@@ -170,10 +227,12 @@ impl TeamsClient {
                             args["reconnectUrl"].as_str().filter(|u| !u.is_empty()).map(str::to_string),
                         );
                         match args["surl"].as_str() {
-                            Some(surl) => {
-                                if let Err(e) = self.trouter_register(&skype.value, &bearer.value, surl, &epid).await {
+                            Some(path) => {
+                                if let Err(e) = self.trouter_register(&bearer.value, path, &epid).await {
                                     tracing::warn!("registrar failed: {e}");
                                 }
+                                surl = Some(path.to_string());
+                                refresh.reset();
                             }
                             None => tracing::warn!("trouter.connected carried no surl"),
                         }
@@ -218,27 +277,21 @@ impl TeamsClient {
         if reconnect.is_some() && !connected {
             self.set_trouter_reconnect_url(None);
         }
-        Ok(())
+        Ok(session_end(connected, clean))
     }
 
     /// Register our trouter endpoint with the Teams registrar so message notifications
-    /// are routed to it.
-    async fn trouter_register(
-        &self,
-        skype: &str,
-        bearer: &str,
-        surl: &str,
-        epid: &str,
-    ) -> Result<()> {
-        let url = "https://teams.microsoft.com/registrar/prod/V2/registrations";
+    /// are routed to it. The registration expires long before our session cap, so
+    /// the session calls this again every `REGISTER_REFRESH`.
+    async fn trouter_register(&self, bearer: &str, surl: &str, epid: &str) -> Result<()> {
         let body = json!({
             "clientDescription": {
                 "appId": "TeamsCDLWebWorker",
                 "aesKey": "",
                 "languageId": "en-US",
-                "platform": "edge",
-                "templateKey": "TeamsCDLWebWorker_2.1",
-                "platformUIVersion": "1.0.0"
+                "platform": "chrome",
+                "templateKey": "TeamsCDLWebWorker_2.6",
+                "platformUIVersion": "1415/26022704215"
             },
             "registrationId": epid,
             "nodeId": "",
@@ -246,16 +299,16 @@ impl TeamsClient {
                 "TROUTER": [{
                     "context": "",
                     "path": surl,
-                    "ttl": 86400
+                    "ttl": REGISTRATION_TTL
                 }]
             }
         });
         let res = self
             .http
-            .post(url)
+            .post(REGISTRAR_URL)
             .header("content-type", "application/json")
-            .header("x-skypetoken", skype)
             .header("authorization", format!("Bearer {}", bearer))
+            .header("x-ms-migration", "True")
             .body(body.to_string())
             .send()
             .await?;
@@ -707,6 +760,25 @@ mod tests {
         let decoded = urlencoding::decode(tc).unwrap();
         let tc: Value = serde_json::from_str(&decoded).unwrap();
         assert_eq!(tc["ua"], "TeamsCDL");
+        assert_eq!(tc["cv"], "2026.07.01.1");
+        assert_eq!(tc["v"], "0.1.0");
+    }
+
+    #[test]
+    fn a_session_that_never_came_up_is_never_clean() {
+        assert_eq!(session_end(false, true), SessionEnd::NeverLive);
+        assert_eq!(session_end(false, false), SessionEnd::NeverLive);
+    }
+
+    #[test]
+    fn a_live_session_reports_how_it_ended() {
+        assert_eq!(session_end(true, true), SessionEnd::Clean);
+        assert_eq!(session_end(true, false), SessionEnd::Live);
+    }
+
+    #[test]
+    fn the_registration_is_refreshed_inside_its_lifetime() {
+        assert!(REGISTER_REFRESH < Duration::from_secs(REGISTRATION_TTL));
     }
 
     #[test]
