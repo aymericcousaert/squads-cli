@@ -32,7 +32,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-use super::{TeamsClient, SCOPE_CHATSVCAGG};
+use super::{TeamsClient, SCOPE_IC3};
 
 /// Client descriptor the service expects in the connect query.
 const TROUTER_TC: &str = r#"{"cv":"2024.23.01.2","ua":"TeamsCDL","hr":"","v":"1.0.0"}"#;
@@ -81,7 +81,7 @@ impl TeamsClient {
     {
         let debug = std::env::var("SQUADS_TROUTER_DEBUG").is_ok();
         let skype = self.get_skype_token().await?;
-        let bearer = self.get_token(SCOPE_CHATSVCAGG).await?;
+        let bearer = self.get_token(SCOPE_IC3).await?;
         let epid = self.trouter_epid().to_string();
 
         // A reconnect url points at the node that held the last session, so the
