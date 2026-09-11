@@ -24,6 +24,9 @@ pub struct Team {
     pub smtp_address: Option<String>,
     pub team_site_information: TeamSiteInformation,
     pub display_name: String,
+    /// Same serde trap as `Message::from`: `deserialize_with` drops the implicit
+    /// default, so a team without a picture would fail the whole team list.
+    #[serde(default)]
     #[serde(deserialize_with = "trim_quotes")]
     pub picture_e_tag: Option<String>,
 }
@@ -92,6 +95,7 @@ pub struct TeamConversations {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Conversation {
+    #[serde(deserialize_with = "super::deserialize_messages")]
     pub messages: Vec<super::Message>,
     pub container_id: String,
     pub id: String,

@@ -18,7 +18,9 @@ pub struct File {
     pub item_id: Option<String>,
     pub file_name: Option<String>,
     pub file_type: Option<String>,
-    pub file_info: FileInfo,
+    /// Missing on some attachments. While it was required, one such file failed
+    /// the whole conversation.
+    pub file_info: Option<FileInfo>,
 }
 
 /// File info details
@@ -209,6 +211,9 @@ where
 #[serde(rename_all = "camelCase")]
 pub struct Message {
     pub content: Option<String>,
+    /// `default` is not redundant: with `deserialize_with`, serde stops treating
+    /// a missing field as `None`, and system messages carry no `from`.
+    #[serde(default)]
     #[serde(deserialize_with = "strip_url_opt")]
     pub from: Option<String>,
     #[serde(alias = "imdisplayname")]
@@ -235,10 +240,41 @@ where
     Ok(opt.map(|url| super::last_segment(&url).to_string()))
 }
 
+/// Decode messages one by one, dropping the ones that fail.
+///
+/// A whole conversation that will not load costs the caller far more than a
+/// missing message, and Teams keeps inventing message shapes.
+pub fn deserialize_messages<'de, D>(deserializer: D) -> Result<Vec<Message>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Vec::<Value>::deserialize(deserializer)?;
+    let mut kept: Vec<Message> = Vec::with_capacity(raw.len());
+    let mut skipped = 0usize;
+
+    for value in raw {
+        match Message::deserialize(&value) {
+            Ok(message) => kept.push(message),
+            Err(e) => {
+                skipped += 1;
+                // Name the message: a silent drop is the expensive kind.
+                let id = value.get("id").and_then(Value::as_str).unwrap_or("unknown");
+                tracing::warn!("skipped message {id}: {e}");
+            }
+        }
+    }
+
+    if skipped > 0 {
+        tracing::warn!("skipped {skipped} of {} messages", skipped + kept.len());
+    }
+    Ok(kept)
+}
+
 /// Conversations response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Conversations {
+    #[serde(deserialize_with = "deserialize_messages")]
     pub messages: Vec<Message>,
 }
 
@@ -355,6 +391,48 @@ mod tests {
         assert_eq!(props["systemdelete"], false);
         // Reply and inline images live in the html, so it must stay unstripped.
         assert!(out["content"].as_str().unwrap().contains("itemid="));
+    }
+
+    /// A conversation is worth more than its worst message: the client shows
+    /// what decoded instead of an error.
+    #[test]
+    fn one_malformed_message_costs_only_itself() {
+        let payload = format!(
+            r#"{{"messages":[{CHATSVC_MESSAGE},{{"id":"bad","content":42}},{CHATSVC_MESSAGE}]}}"#
+        );
+        let convs: Conversations =
+            serde_json::from_str(&payload).expect("conversation should parse");
+        assert_eq!(convs.messages.len(), 2);
+        assert!(convs
+            .messages
+            .iter()
+            .all(|m| m.id.as_deref() == Some("1700000000000")));
+    }
+
+    /// System messages carry no sender, and with `deserialize_with` serde needs
+    /// `default` to accept that.
+    #[test]
+    fn a_message_without_from_still_decodes() {
+        let msg: Message = serde_json::from_str(
+            r#"{"id":"1","messagetype":"ThreadActivity/AddMember","content":"<addmember/>"}"#,
+        )
+        .expect("payload should parse");
+        assert_eq!(msg.from, None);
+        assert_eq!(
+            msg.message_type.as_deref(),
+            Some("ThreadActivity/AddMember")
+        );
+    }
+
+    #[test]
+    fn a_file_without_file_info_still_decodes() {
+        let msg: Message = serde_json::from_str(
+            r#"{"id":"1","properties":{"files":"[{\"id\":\"f1\",\"fileName\":\"y.docx\"}]"}}"#,
+        )
+        .expect("payload should parse");
+        let files = msg.properties.expect("properties").files.expect("files");
+        assert_eq!(files[0].file_name.as_deref(), Some("y.docx"));
+        assert!(files[0].file_info.is_none());
     }
 
     #[test]
