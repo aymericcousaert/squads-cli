@@ -71,6 +71,10 @@ squads-cli chats list --search "john alice"  # finds "John Doe & Alice Smith"
 # Get chat messages
 squads-cli chats messages <chat-id>
 
+# Add system messages to the JSON output (members added, topic renames, calls)
+squads-cli chats messages <chat-id> --format json --types text,thread_activity
+squads-cli chats messages <chat-id> --format json --types all
+
 # Send a message
 squads-cli chats send <chat-id> "Hello, World!"
 
@@ -92,6 +96,22 @@ squads-cli chats download-file <chat-id> <file-url> --output "file.docx"
 # We recommend using piping for AI agents to process files without saving to disk
 squads-cli chats download-file <chat-id> <file-url> -o - | textutil -convert txt -stdin -stdout
 ```
+
+`chats messages` returns human messages only, so existing scripts see no change.
+`--types` adds the other kinds to the `--format json` output:
+
+| `--types` value | What it adds | Wire `messagetype` |
+|---|---|---|
+| `text` | messages someone typed (the default) | `RichText/Html`, `Text` |
+| `thread_activity` | members added or removed, topic renames | `ThreadActivity/*` |
+| `event` | call records | `Event/*` |
+| `all` | every message the chat returned | any |
+
+The table and plain output always show human messages only: a terminal listing does
+not want call records.
+
+A message that fails to decode is skipped, not fatal. The count and the message id
+go to stderr, so the rest of the conversation still loads.
 
 ### Watch (real-time)
 

@@ -3,7 +3,7 @@ use std::io::{self, Read};
 use std::path::Path;
 
 use anyhow::Result;
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
 use tabled::Tabled;
 
@@ -50,6 +50,11 @@ pub enum ChatsSubcommand {
         /// Maximum number of messages to retrieve
         #[arg(short, long, default_value = "50")]
         limit: usize,
+
+        /// Message kinds to put in the --format json output, comma separated.
+        /// Human messages only by default.
+        #[arg(long, value_enum, value_delimiter = ',', default_value = "text")]
+        types: Vec<MessageKind>,
     },
 
     /// Send a message to a chat
@@ -326,9 +331,11 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
     match cmd.command {
         ChatsSubcommand::List { limit, search } => list(config, limit, search, format).await,
         ChatsSubcommand::Show { chat_id } => show(config, &chat_id, format).await,
-        ChatsSubcommand::Messages { chat_id, limit } => {
-            messages(config, &chat_id, limit, format).await
-        }
+        ChatsSubcommand::Messages {
+            chat_id,
+            limit,
+            types,
+        } => messages(config, &chat_id, limit, &types, format).await,
         ChatsSubcommand::Send {
             chat_id_or_message,
             message,
@@ -529,22 +536,63 @@ async fn show(config: &Config, chat_id: &str, format: OutputFormat) -> Result<()
     Ok(())
 }
 
+/// A kind of message, grouped by the `messagetype` chatsvc sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum MessageKind {
+    /// A message someone typed: `RichText/Html` or `Text`
+    #[value(name = "text")]
+    Text,
+    /// Members added or removed, topic renames: `ThreadActivity/*`
+    #[value(name = "thread_activity", alias = "thread-activity")]
+    ThreadActivity,
+    /// Call records and other events: `Event/*`
+    #[value(name = "event")]
+    Event,
+    /// Every message the chat returned, whatever its type
+    #[value(name = "all")]
+    All,
+}
+
+/// The kind of a wire `messagetype`. `None` for a type we do not group, which
+/// only `all` selects.
+fn message_kind(message_type: Option<&str>) -> Option<MessageKind> {
+    match message_type? {
+        "RichText/Html" | "Text" => Some(MessageKind::Text),
+        t if t.starts_with("ThreadActivity/") => Some(MessageKind::ThreadActivity),
+        t if t.starts_with("Event/") => Some(MessageKind::Event),
+        _ => None,
+    }
+}
+
+/// True when the output was asked for this message.
+fn wants_message(selected: &[MessageKind], message_type: Option<&str>) -> bool {
+    selected.contains(&MessageKind::All)
+        || message_kind(message_type).is_some_and(|kind| selected.contains(&kind))
+}
+
 async fn messages(
     config: &Config,
     chat_id: &str,
     limit: usize,
+    types: &[MessageKind],
     format: OutputFormat,
 ) -> Result<()> {
     let client = TeamsClient::new(config)?;
     let conversations = client.get_conversations(chat_id, None).await?;
 
+    let json = matches!(format, OutputFormat::Json);
+    if !json && types != [MessageKind::Text] {
+        eprintln!("note: --types shapes the --format json output only");
+    }
+
+    // A terminal listing wants people talking, not call records, so only the
+    // json output follows --types.
+    let selected: &[MessageKind] = if json { types } else { &[MessageKind::Text] };
+
     let filtered_messages: Vec<_> = conversations
         .messages
         .into_iter()
-        .filter(|m| {
-            m.message_type.as_deref() == Some("RichText/Html")
-                || m.message_type.as_deref() == Some("Text")
-        })
+        .filter(|m| wants_message(selected, m.message_type.as_deref()))
         .take(limit)
         .collect();
 
@@ -984,7 +1032,10 @@ async fn files(config: &Config, chat_id: &str, limit: usize, format: OutputForma
                             .unwrap_or_else(|| "Unknown".to_string()),
                         file_type: file.file_type.clone().unwrap_or_else(|| "-".to_string()),
                         file_url: file.object_url.clone().unwrap_or_default(),
-                        share_url: file.file_info.share_url.clone(),
+                        share_url: file
+                            .file_info
+                            .as_ref()
+                            .and_then(|info| info.share_url.clone()),
                     });
                 }
             }
@@ -1041,7 +1092,9 @@ async fn download_file(
                         if file.id.as_deref() == Some(file_id)
                             || file.item_id.as_deref() == Some(file_id)
                         {
-                            if let Some(url) = &file.file_info.file_url {
+                            if let Some(url) =
+                                file.file_info.as_ref().and_then(|i| i.file_url.as_ref())
+                            {
                                 found_url = Some(url.clone());
                                 break;
                             }
@@ -1306,4 +1359,60 @@ async fn reactions(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::{Cli, Commands};
+    use clap::Parser;
+
+    /// Scripts read this output and assume every row is someone talking.
+    #[test]
+    fn the_default_selection_is_human_messages_only() {
+        let default = [MessageKind::Text];
+        assert!(wants_message(&default, Some("RichText/Html")));
+        assert!(wants_message(&default, Some("Text")));
+        assert!(!wants_message(&default, Some("ThreadActivity/AddMember")));
+        assert!(!wants_message(&default, Some("Event/Call")));
+    }
+
+    #[test]
+    fn system_messages_come_in_when_asked_for() {
+        let selected = [MessageKind::Text, MessageKind::ThreadActivity];
+        assert!(wants_message(&selected, Some("ThreadActivity/TopicUpdate")));
+        assert!(wants_message(&selected, Some("RichText/Html")));
+        assert!(!wants_message(&selected, Some("Event/Call")));
+
+        // `all` also covers the types we do not group.
+        assert!(wants_message(&[MessageKind::All], Some("Event/Call")));
+        assert!(wants_message(
+            &[MessageKind::All],
+            Some("RichText/Media_Card")
+        ));
+        assert!(!wants_message(
+            &[MessageKind::Event],
+            Some("RichText/Media_Card")
+        ));
+    }
+
+    #[test]
+    fn types_parses_a_comma_separated_list() {
+        let cli = Cli::try_parse_from([
+            "squads-cli",
+            "chats",
+            "messages",
+            "19:x@thread.v2",
+            "--types",
+            "text,thread_activity",
+        ])
+        .expect("flag should parse");
+        let Commands::Chats(ChatsCommand {
+            command: ChatsSubcommand::Messages { types, .. },
+        }) = cli.command
+        else {
+            panic!("expected chats messages");
+        };
+        assert_eq!(types, [MessageKind::Text, MessageKind::ThreadActivity]);
+    }
 }
