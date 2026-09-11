@@ -92,6 +92,7 @@ Stream Teams events as they happen, one JSON object per line.
 - **Follow Messages**: `squads-cli watch --json`
 - **Widen the Stream**: `squads-cli watch --json --events all` (or a comma list: `--events message,typing,read`)
 - **One Chat Only**: `squads-cli watch --json --chat <chat-id>`
+- **See Your Own Messages**: `squads-cli watch --json --include-self` (for a chat client: what you send from another device lands on the stream too)
 
 Every line carries `event`, `time` and `source`. Only `message` is sent unless you ask for more.
 
@@ -105,8 +106,8 @@ Every line carries `event`, `time` and `source`. Only `message` is sent unless y
 | `presence` | a user's availability changed | `user_id`, `availability` |
 
 `--chat` filters the chat events only. `message_loss` and `presence` always pass. Your own
-messages and edits are dropped. `message` is de-duplicated by `message_id`, `message_update`
-is not, because an edit reuses the id.
+messages and edits are dropped unless you pass `--include-self`. `message` is de-duplicated
+by `message_id`, `message_update` is not, because an edit reuses the id.
 
 ## Best Practices for Agents
 

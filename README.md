@@ -128,6 +128,9 @@ squads-cli watch --json --events all
 
 # Only one chat
 squads-cli watch --json --chat "19:abc@thread.v2"
+
+# Also stream what you sent yourself, from this or any other device
+squads-cli watch --json --include-self
 ```
 
 `--json` prints one JSON object per line. Every line carries `event`, `time` and
@@ -145,10 +148,15 @@ squads-cli watch --json --chat "19:abc@thread.v2"
 How the filters apply:
 
 - `--chat` filters the chat events: `message`, `message_update`, `typing` and `read`. `message_loss` and `presence` are account-wide and always pass
-- your own messages and your own edits are dropped
+- your own messages and your own edits are dropped, unless you pass `--include-self`
 - `message` is de-duplicated by `message_id`. `message_update` is not, because an edit reuses the id
 - the terminal output (`--push` without `--json`) shows messages only, whatever `--events` says
 - `presence` is parsed and emitted, but nothing subscribes to presence yet, so the stream is quiet until it does
+
+`--include-self` is for a chat client: a message you send from your phone belongs in the
+thread, and moves that chat to the top of the list. A notifier wants the default, where
+your own traffic is noise. The flag covers `message` and `message_update` on both the
+push and the polling path, so your own edits arrive too.
 
 ### Personal Notes
 

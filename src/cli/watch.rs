@@ -42,6 +42,10 @@ pub struct WatchCommand {
     /// Event kinds to put on the --json stream, comma separated. Messages only by default.
     #[arg(long, value_enum, value_delimiter = ',', default_value = "message")]
     pub events: Vec<WatchEvent>,
+
+    /// Also stream what you sent yourself, from this or any other device.
+    #[arg(long)]
+    pub include_self: bool,
 }
 
 /// An event kind the --json stream can carry.
@@ -193,11 +197,12 @@ async fn check_new_messages(
 
             seen.insert(msg_id);
 
-            // Skip messages from self
-            if let Some(my_id) = my_id {
-                if msg.from.as_deref() == Some(my_id) {
-                    continue;
-                }
+            if skips_own(
+                my_id,
+                msg.from.as_deref().unwrap_or_default(),
+                cmd.include_self,
+            ) {
+                continue;
             }
 
             // Skip non-user messages
@@ -361,9 +366,8 @@ async fn watch_push(client: &TeamsClient, cmd: &WatchCommand) -> Result<()> {
                     skip("not selected");
                     return;
                 }
-                // skip our own messages, and our own edits
                 if let TrouterEvent::NewMessage(m) | TrouterEvent::MessageUpdate(m) = &ev {
-                    if my_mri.as_deref() == Some(m.from_mri.as_str()) {
+                    if skips_own(my_mri.as_deref(), &m.from_mri, cmd.include_self) {
                         skip("own message");
                         return;
                     }
@@ -496,6 +500,16 @@ fn presence_user_ids(details: &UserDetails, my_mri: Option<&str>, cap: usize) ->
         }
     }
     ids
+}
+
+/// True when an event is ours and the caller did not ask for its own traffic.
+/// The mri carries the directory id Graph returns, but its case is not
+/// guaranteed, so compare without it.
+fn skips_own(my_mri: Option<&str>, from_mri: &str, include_self: bool) -> bool {
+    if include_self {
+        return false;
+    }
+    my_mri.is_some_and(|me| me.eq_ignore_ascii_case(from_mri))
 }
 
 /// True when the stream was asked for this kind.
@@ -810,6 +824,33 @@ mod tests {
         let mut deleted = chat("19:a@unq.gbl.spaces", true, &["8:orgid:u1"]);
         deleted.is_conversation_deleted = Some(true);
         assert!(presence_user_ids(&details(vec![deleted]), None, 10).is_empty());
+    }
+
+    #[test]
+    fn own_events_are_dropped_by_default() {
+        assert!(skips_own(Some("8:orgid:me"), "8:orgid:me", false));
+    }
+
+    #[test]
+    fn include_self_keeps_our_own_events() {
+        assert!(!skips_own(Some("8:orgid:me"), "8:orgid:me", true));
+    }
+
+    #[test]
+    fn someone_else_is_never_dropped() {
+        assert!(!skips_own(Some("8:orgid:me"), "8:orgid:u1", false));
+        assert!(!skips_own(Some("8:orgid:me"), "8:orgid:u1", true));
+    }
+
+    #[test]
+    fn an_unknown_profile_drops_nothing() {
+        assert!(!skips_own(None, "8:orgid:me", false));
+        assert!(!skips_own(None, "", false));
+    }
+
+    #[test]
+    fn our_mri_matches_whatever_its_case() {
+        assert!(skips_own(Some("8:orgid:AB-cd"), "8:orgid:ab-CD", false));
     }
 
     #[test]
