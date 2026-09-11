@@ -24,7 +24,7 @@ A command-line interface for Microsoft Teams, designed for AI agents (Claude Cod
 ```bash
 git clone https://github.com/aymericcousaert/squads-cli
 cd squads-cli
-cargo build --release
+cargo build --release --features tui
 ./target/release/squads-cli install
 ```
 

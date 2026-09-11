@@ -2,6 +2,11 @@ mod api;
 mod cache;
 mod cli;
 mod config;
+mod names;
+// Only the TUI reads this cache today. The module stays ungated so its
+// round-trip test runs in the default build, where CI executes the tests.
+#[cfg_attr(not(feature = "tui"), allow(dead_code))]
+mod overview;
 mod types;
 
 #[cfg(feature = "tui")]

@@ -48,6 +48,9 @@ pub struct TeamsClient {
     tenant: String,
     pub(crate) http: Client,
     cache: Cache,
+    /// Own profile, kept after the first lookup. Sending a message needs it,
+    /// and re-fetching it added a Graph round trip to every send.
+    me: Arc<RwLock<Option<Profile>>>,
 }
 
 /// A file uploaded to OneDrive and shared, ready for a chat message to point at.
@@ -87,6 +90,7 @@ impl TeamsClient {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
             cache,
+            me: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -229,8 +233,17 @@ impl TeamsClient {
         }
     }
 
-    /// Get current user profile
+    /// Get current user profile, from memory after the first call.
     pub async fn get_me(&self) -> Result<Profile> {
+        if let Some(me) = self.me.read().unwrap().clone() {
+            return Ok(me);
+        }
+        let me = self.fetch_me().await?;
+        *self.me.write().unwrap() = Some(me.clone());
+        Ok(me)
+    }
+
+    async fn fetch_me(&self) -> Result<Profile> {
         let token = self.get_token(SCOPE_GRAPH).await?;
         let url = "https://graph.microsoft.com/v1.0/me";
 
@@ -340,21 +353,72 @@ impl TeamsClient {
         }
     }
 
-    /// Resolve an external user's display name by fetching messages from the chat.
-    /// Graph `/users/{id}` fails for cross-tenant users, but messages always
-    /// contain `imdisplayname` for the sender.
-    pub async fn resolve_name_from_messages(
-        &self,
-        chat_id: &str,
-        user_id: &str,
-    ) -> Result<Option<String>> {
-        let wanted = [user_id.to_string()];
-        let names = self.resolve_names_from_messages(chat_id, &wanted).await?;
-        Ok(names.into_values().next())
+    /// Download a picture from a message.
+    ///
+    /// Teams keeps its own attachments behind the chat service and needs the
+    /// IC3 token; anything else (a Giphy link, a CDN) is public and must be
+    /// fetched bare, since sending a bearer token to a third party would leak
+    /// it.
+    pub async fn fetch_picture(&self, url: &str) -> Result<Vec<u8>> {
+        let mut request = self.http.get(url);
+        if is_microsoft_host(url) {
+            let token = self.get_token(SCOPE_IC3).await?;
+            request = request.header("authorization", format!("Bearer {}", token.value));
+        }
+
+        let res = request.send().await?;
+        if !res.status().is_success() {
+            return Err(anyhow!("Failed to fetch picture: {}", res.status()));
+        }
+        Ok(res.bytes().await?.to_vec())
+    }
+
+    /// Move the chat's read watermark to now, which is what clears its unread
+    /// state in Teams. `isRead` is derived from this server side, so without it
+    /// a chat stays unread everywhere no matter how often you open it.
+    ///
+    /// The horizon is `originalArrivalTime;timeStamp;clientMessageId`. Passing
+    /// the current time as the arrival time marks everything up to now as read,
+    /// which avoids needing the exact id of the newest message.
+    pub async fn mark_chat_read(&self, chat_id: &str, last_message_id: Option<&str>) -> Result<()> {
+        let token = self.get_token(SCOPE_IC3).await?;
+        let now = chrono::Utc::now().timestamp_millis();
+        let fallback = now.to_string();
+        let horizon = format!("{};0;{}", now, last_message_id.unwrap_or(&fallback));
+
+        let url = format!(
+            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/properties?name=consumptionhorizon",
+            chat_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
+        );
+
+        let res = self
+            .http
+            .put(&url)
+            .headers(headers)
+            .json(&serde_json::json!({ "consumptionhorizon": horizon }))
+            .send()
+            .await?;
+
+        if res.status().is_success() {
+            Ok(())
+        } else {
+            let status = res.status();
+            let body = res.text().await?;
+            Err(anyhow!("Failed to mark chat read: {} - {}", status, body))
+        }
     }
 
     /// Resolve several display names from a single chat, keyed by user object ID.
     /// One message fetch covers every member of the chat.
+    ///
+    /// Graph `/users/{id}` fails for cross-tenant users, but every message
+    /// carries `imdisplayname` for its sender.
     pub async fn resolve_names_from_messages(
         &self,
         chat_id: &str,
@@ -3063,6 +3127,81 @@ impl TeamsClient {
             let status = res.status();
             let body = res.text().await?;
             Err(anyhow!("Failed to append rows: {} - {}", status, body))
+        }
+    }
+}
+
+/// Whether a picture URL is served by Microsoft, and so needs our token.
+/// Matches on the host only: a path or query containing the domain must not
+/// be enough to send the token somewhere else.
+fn is_microsoft_host(url: &str) -> bool {
+    const DOMAINS: [&str; 4] = [
+        "teams.microsoft.com",
+        "skype.com",
+        "sharepoint.com",
+        "office.net",
+    ];
+
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .rsplit('@')
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    DOMAINS
+        .iter()
+        .any(|domain| host == *domain || host.ends_with(&format!(".{}", domain)))
+}
+
+#[cfg(test)]
+mod picture_host_tests {
+    use super::is_microsoft_host;
+
+    #[test]
+    fn teams_attachments_are_ours() {
+        assert!(is_microsoft_host(
+            "https://eu-api.asyncgw.teams.microsoft.com/v1/objects/0-eu-d1/views/imgo"
+        ));
+        assert!(is_microsoft_host(
+            "https://statics.teams.cdn.office.net/x.png"
+        ));
+        assert!(is_microsoft_host(
+            "https://acme.sharepoint.com/a.jpg"
+        ));
+    }
+
+    #[test]
+    fn third_parties_get_no_token() {
+        assert!(!is_microsoft_host(
+            "https://media4.giphy.com/media/x/giphy.gif"
+        ));
+        assert!(!is_microsoft_host("https://example.com/a.png"));
+    }
+
+    /// A look-alike host must not collect our bearer token.
+    #[test]
+    fn lookalike_hosts_get_no_token() {
+        for url in [
+            "https://evil.com/teams.microsoft.com/x.png",
+            "https://evil.com/?u=teams.microsoft.com",
+            "https://teams.microsoft.com.evil.com/x.png",
+            "https://notskype.com/x.png",
+            "https://evil.com#teams.microsoft.com",
+            "https://evil.com@teams.microsoft.com.attacker.net/x",
+        ] {
+            assert!(!is_microsoft_host(url), "leaked token to {}", url);
         }
     }
 }

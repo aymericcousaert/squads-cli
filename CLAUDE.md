@@ -10,7 +10,7 @@ squads-cli is a Rust CLI for Microsoft Teams and Outlook, designed for AI agents
 
 ```bash
 cargo build                    # Debug build
-cargo build --release          # Release build
+cargo build --release          # Release build (no TUI, see below)
 cargo build --features tui     # Build with TUI support
 cargo test                     # Run all tests
 cargo test --lib               # Unit tests only
@@ -88,7 +88,8 @@ check_interval_hours = 24
 ## Releasing New Versions
 
 1. Bump version in `Cargo.toml`
-2. Build release binary: `cargo build --release`
+2. Build release binary: `cargo build --release --features tui`
+   (without `--features tui` the `tui` subcommand is missing from the binary)
 3. Commit and push changes
 4. Create GitHub release with binary:
    ```bash
