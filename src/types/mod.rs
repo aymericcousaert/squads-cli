@@ -69,21 +69,22 @@ impl TokenStore {
 
 // Helper deserializers (ported from Squads)
 
-/// Strip URL prefix from contact IDs
+/// Reduce a contacts URL to the MRI everything downstream compares against.
+///
+/// The region sits in the path on `teams.microsoft.com` and in the host on
+/// `notifications.skype.net`, so keep the last segment instead of matching a
+/// prefix. A bare MRI passes through unchanged.
 pub fn strip_url<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let opt = Option::<String>::deserialize(deserializer)?;
-    Ok(opt.map(|url| {
-        let pass1 = url
-            .strip_prefix("https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/contacts/")
-            .unwrap_or(&url);
-        pass1
-            .strip_prefix("https://notifications.skype.net/v1/users/ME/contacts/")
-            .unwrap_or(pass1)
-            .to_string()
-    }))
+    Ok(opt.map(|url| last_segment(&url).to_string()))
+}
+
+/// Last path segment of a URL, or the whole string when it has no slash.
+pub(crate) fn last_segment(url: &str) -> &str {
+    url.rsplit('/').next().unwrap_or(url)
 }
 
 /// Convert string to i64
@@ -142,5 +143,50 @@ where
         }
     } else {
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Deserialize)]
+    struct Holder {
+        #[serde(deserialize_with = "strip_url")]
+        from: Option<String>,
+    }
+
+    fn from_field(json: &str) -> Option<String> {
+        serde_json::from_str::<Holder>(json)
+            .expect("payload should parse")
+            .from
+    }
+
+    #[test]
+    fn strip_url_keeps_the_mri_of_a_contacts_url() {
+        for region in ["emea", "amer", "apac"] {
+            let json = format!(
+                r#"{{"from":"https://teams.microsoft.com/api/chatsvc/{region}/v1/users/ME/contacts/8:orgid:u1"}}"#
+            );
+            assert_eq!(from_field(&json).as_deref(), Some("8:orgid:u1"));
+        }
+    }
+
+    #[test]
+    fn strip_url_handles_a_regional_notifications_host() {
+        let json =
+            r#"{"from":"https://emea.notifications.skype.net/v1/users/ME/contacts/8:orgid:u1"}"#;
+        assert_eq!(from_field(json).as_deref(), Some("8:orgid:u1"));
+        let json = r#"{"from":"https://notifications.skype.net/v1/users/ME/contacts/8:orgid:u1"}"#;
+        assert_eq!(from_field(json).as_deref(), Some("8:orgid:u1"));
+    }
+
+    #[test]
+    fn strip_url_passes_a_bare_mri_through() {
+        assert_eq!(
+            from_field(r#"{"from":"8:orgid:u1"}"#).as_deref(),
+            Some("8:orgid:u1")
+        );
+        assert_eq!(from_field(r#"{"from":null}"#), None);
     }
 }

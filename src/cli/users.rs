@@ -1,13 +1,19 @@
+use std::io::Write;
+
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use serde::Serialize;
 use tabled::Tabled;
 
-use crate::api::TeamsClient;
+use crate::api::{photo_object_id, PhotoSubject, TeamsClient};
 use crate::config::Config;
 
-use super::output::{print_error, print_output, print_single};
+use super::output::{print_error, print_output, print_single, print_success};
 use super::OutputFormat;
+
+/// What the command exits with when the person simply has no photo. Distinct
+/// from 1, so a caller can tell "nobody set one" from "the fetch broke".
+pub const EXIT_NO_PHOTO: i32 = 3;
 
 #[derive(Args, Debug)]
 pub struct UsersCommand {
@@ -45,6 +51,20 @@ pub enum UsersSubcommand {
         /// Maximum number of results
         #[arg(short, long, default_value = "20")]
         limit: usize,
+    },
+
+    /// Download a profile photo
+    Photo {
+        /// User object ID, MRI or email. With --group, a team's group ID.
+        id: String,
+
+        /// Look the ID up as a group (a team) rather than a person
+        #[arg(long)]
+        group: bool,
+
+        /// Output file path, or `-` for stdout
+        #[arg(short, long)]
+        output: Option<String>,
     },
 
     /// Check user presence/availability status
@@ -89,6 +109,9 @@ pub async fn execute(cmd: UsersCommand, config: &Config, format: OutputFormat) -
         UsersSubcommand::Show { user_id } => show(config, &user_id, format).await,
         UsersSubcommand::Me => me(config, format).await,
         UsersSubcommand::Search { query, limit } => search(config, &query, limit, format).await,
+        UsersSubcommand::Photo { id, group, output } => {
+            photo(config, &id, group, output, format).await
+        }
         UsersSubcommand::Presence { user, users } => presence(config, user, users, format).await,
     }
 }
@@ -306,5 +329,172 @@ fn format_availability(availability: Option<&str>) -> String {
         Some("PresenceUnknown") => "❓ Unknown".to_string(),
         Some(other) => other.to_string(),
         None => "-".to_string(),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct PhotoResult {
+    id: String,
+    /// False when nobody set a photo. The bytes fields are absent then.
+    found: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes: Option<usize>,
+}
+
+/// Write a profile photo to a file, or to stdout with `-o -`.
+///
+/// `chats download-image` only writes files, because an inline image is a
+/// message attachment someone wants to keep. An avatar is small and usually
+/// piped straight on, so stdout is worth having; the confirmation goes to
+/// stderr there to keep those bytes alone on stdout.
+async fn photo(
+    config: &Config,
+    id: &str,
+    group: bool,
+    output: Option<String>,
+    format: OutputFormat,
+) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+
+    let subject = if group {
+        PhotoSubject::Group
+    } else {
+        PhotoSubject::Person
+    };
+
+    // An email is what a person has to hand, and the other subcommands resolve
+    // one the same way. A colon rules out a chat ID, which also carries an `@`.
+    let resolved = if !group && id.contains('@') && !id.contains(':') {
+        client
+            .get_users(Some(&format!("$filter=mail eq '{}'", id)))
+            .await
+            .ok()
+            .and_then(|users| users.value.into_iter().next())
+            .map(|user| user.id)
+    } else {
+        photo_object_id(id).map(str::to_string)
+    };
+
+    // A bot MRI or an unknown email resolves to nothing, which is the same
+    // answer as a person without a photo.
+    let found = match &resolved {
+        Some(object_id) => client.fetch_profile_photo(object_id, subject).await?,
+        None => None,
+    };
+
+    let Some((content_type, bytes)) = found else {
+        return missing(id, format);
+    };
+
+    let to_stdout = output.as_deref() == Some("-");
+    if to_stdout {
+        std::io::stdout().write_all(&bytes)?;
+        std::io::stdout().flush()?;
+        eprintln!("Wrote {} bytes ({}) to stdout", bytes.len(), content_type);
+        return Ok(());
+    }
+
+    let path = output.unwrap_or_else(|| {
+        format!(
+            "photo_{}.{}",
+            resolved.as_deref().unwrap_or(id),
+            extension_for(&content_type)
+        )
+    });
+    std::fs::write(&path, &bytes)?;
+
+    let result = PhotoResult {
+        id: id.to_string(),
+        found: true,
+        output: Some(path.clone()),
+        content_type: Some(content_type.clone()),
+        bytes: Some(bytes.len()),
+    };
+
+    match format {
+        OutputFormat::Json => print_single(&result, format),
+        _ => print_success(&format!(
+            "Downloaded {} ({}, {} bytes)",
+            path,
+            content_type,
+            bytes.len()
+        )),
+    }
+
+    Ok(())
+}
+
+/// Nobody has a photo here. Said plainly and with its own exit code, because
+/// most people never set one and a caller must not treat that as a breakage.
+fn missing(id: &str, format: OutputFormat) -> Result<()> {
+    let result = PhotoResult {
+        id: id.to_string(),
+        found: false,
+        output: None,
+        content_type: None,
+        bytes: None,
+    };
+    match format {
+        OutputFormat::Json => print_single(&result, format),
+        _ => print_error(&format!("No profile photo for {}", id)),
+    }
+    std::process::exit(EXIT_NO_PHOTO);
+}
+
+fn extension_for(content_type: &str) -> &'static str {
+    match content_type {
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "jpg",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::{Cli, Commands};
+    use clap::Parser;
+
+    fn photo_args(args: &[&str]) -> (String, bool, Option<String>) {
+        match Cli::parse_from(args).command {
+            Commands::Users(cmd) => match cmd.command {
+                UsersSubcommand::Photo { id, group, output } => (id, group, output),
+                other => panic!("not a photo command: {:?}", other),
+            },
+            _ => panic!("not a users command"),
+        }
+    }
+
+    #[test]
+    fn a_photo_is_asked_for_by_id_and_written_where_told() {
+        let (id, group, output) =
+            photo_args(&["squads-cli", "users", "photo", "abc", "-o", "a.jpg"]);
+        assert_eq!(id, "abc");
+        assert!(!group);
+        assert_eq!(output.as_deref(), Some("a.jpg"));
+    }
+
+    /// A team's photo hangs off a different Graph collection, so the flag has
+    /// to survive parsing.
+    #[test]
+    fn a_group_photo_is_asked_for_the_same_way() {
+        let (id, group, output) = photo_args(&["squads-cli", "users", "photo", "abc", "--group"]);
+        assert_eq!(id, "abc");
+        assert!(group);
+        assert_eq!(output, None);
+    }
+
+    #[test]
+    fn the_written_file_is_named_after_what_graph_sent() {
+        assert_eq!(extension_for("image/png"), "png");
+        assert_eq!(extension_for("image/gif"), "gif");
+        assert_eq!(extension_for("image/jpeg"), "jpg");
+        // Graph has sent an unlabelled photo before; JPEG is what it is.
+        assert_eq!(extension_for("application/octet-stream"), "jpg");
     }
 }

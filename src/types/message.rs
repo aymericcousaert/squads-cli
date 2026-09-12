@@ -18,7 +18,9 @@ pub struct File {
     pub item_id: Option<String>,
     pub file_name: Option<String>,
     pub file_type: Option<String>,
-    pub file_info: FileInfo,
+    /// Missing on some attachments. While it was required, one such file failed
+    /// the whole conversation.
+    pub file_info: Option<FileInfo>,
 }
 
 /// File info details
@@ -209,6 +211,9 @@ where
 #[serde(rename_all = "camelCase")]
 pub struct Message {
     pub content: Option<String>,
+    /// `default` is not redundant: with `deserialize_with`, serde stops treating
+    /// a missing field as `None`, and system messages carry no `from`.
+    #[serde(default)]
     #[serde(deserialize_with = "strip_url_opt")]
     pub from: Option<String>,
     #[serde(alias = "imdisplayname")]
@@ -216,6 +221,8 @@ pub struct Message {
     #[serde(alias = "messagetype")]
     pub message_type: Option<String>,
     pub properties: Option<MessageProperties>,
+    /// chatsvc spells this `composetime`, the aggregator `composeTime`.
+    #[serde(alias = "composetime")]
     pub compose_time: Option<String>,
     #[serde(alias = "originalarrivaltime")]
     pub original_arrival_time: Option<String>,
@@ -224,26 +231,50 @@ pub struct Message {
     pub container_id: Option<String>,
 }
 
+/// Same as `strip_url`: keep the MRI, drop whatever regional URL wraps it.
 fn strip_url_opt<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let opt = Option::<String>::deserialize(deserializer)?;
-    Ok(opt.map(|url| {
-        let pass1 = url
-            .strip_prefix("https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/contacts/")
-            .unwrap_or(&url);
-        pass1
-            .strip_prefix("https://notifications.skype.net/v1/users/ME/contacts/")
-            .unwrap_or(pass1)
-            .to_string()
-    }))
+    Ok(opt.map(|url| super::last_segment(&url).to_string()))
+}
+
+/// Decode messages one by one, dropping the ones that fail.
+///
+/// A whole conversation that will not load costs the caller far more than a
+/// missing message, and Teams keeps inventing message shapes.
+pub fn deserialize_messages<'de, D>(deserializer: D) -> Result<Vec<Message>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Vec::<Value>::deserialize(deserializer)?;
+    let mut kept: Vec<Message> = Vec::with_capacity(raw.len());
+    let mut skipped = 0usize;
+
+    for value in raw {
+        match Message::deserialize(&value) {
+            Ok(message) => kept.push(message),
+            Err(e) => {
+                skipped += 1;
+                // Name the message: a silent drop is the expensive kind.
+                let id = value.get("id").and_then(Value::as_str).unwrap_or("unknown");
+                tracing::warn!("skipped message {id}: {e}");
+            }
+        }
+    }
+
+    if skipped > 0 {
+        tracing::warn!("skipped {skipped} of {} messages", skipped + kept.len());
+    }
+    Ok(kept)
 }
 
 /// Conversations response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Conversations {
+    #[serde(deserialize_with = "deserialize_messages")]
     pub messages: Vec<Message>,
 }
 
@@ -298,4 +329,133 @@ pub struct GraphChat {
     pub created_date_time: Option<String>,
     pub chat_type: Option<String>,
     pub web_url: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn from_mri(url: &str) -> Option<String> {
+        let json = format!(r#"{{"from":"{url}"}}"#);
+        serde_json::from_str::<Message>(&json)
+            .expect("payload should parse")
+            .from
+    }
+
+    /// A chat message as chatsvc sends one, trimmed to the fields a chat UI
+    /// reads: an attachment, a reaction, an edit and a reply.
+    const CHATSVC_MESSAGE: &str = r##"{
+        "id": "1700000000000",
+        "from": "8:orgid:u1",
+        "composetime": "2030-01-01T10:00:00.000Z",
+        "originalarrivaltime": "2030-01-01T10:00:00.000Z",
+        "messagetype": "RichText/Html",
+        "imdisplayname": "Ada Fenwick",
+        "content": "<blockquote itemtype=\"http://schema.skype.com/Reply\" itemid=\"1699999999999\"></blockquote><p>hi</p>",
+        "properties": {
+            "edittime": "1700000000005",
+            "deletetime": "0",
+            "systemdelete": "false",
+            "files": "[{\"id\":\"f1\",\"fileName\":\"y.docx\",\"fileType\":\"docx\",\"objectUrl\":\"https://x/y.docx\",\"fileInfo\":{\"fileUrl\":\"https://x/y.docx\"}}]",
+            "emotions": [{"key":"like","users":[{"mri":"8:orgid:u2","time":1700000000009,"value":"1700000000009"}]}]
+        }
+    }"##;
+
+    fn chatsvc_message_json() -> serde_json::Value {
+        let msg: Message = serde_json::from_str(CHATSVC_MESSAGE).expect("payload should parse");
+        serde_json::to_value(&msg).expect("message should serialise")
+    }
+
+    /// chatsvc sends `composetime`, so without the alias the field serialised
+    /// as null on every message.
+    #[test]
+    fn compose_time_survives_the_lowercase_spelling() {
+        assert_eq!(
+            chatsvc_message_json()["composeTime"],
+            "2030-01-01T10:00:00.000Z"
+        );
+    }
+
+    /// What a client renders a conversation from. Dropping any of it would send
+    /// the caller back to the API for every message.
+    #[test]
+    fn the_json_output_carries_what_a_chat_ui_needs() {
+        let out = chatsvc_message_json();
+        let props = &out["properties"];
+        assert_eq!(props["files"][0]["fileName"], "y.docx");
+        assert_eq!(props["files"][0]["fileInfo"]["fileUrl"], "https://x/y.docx");
+        assert_eq!(props["emotions"][0]["key"], "like");
+        assert_eq!(props["emotions"][0]["users"][0]["mri"], "8:orgid:u2");
+        assert_eq!(props["edittime"], 1_700_000_000_005i64);
+        assert_eq!(props["deletetime"], 0);
+        assert_eq!(props["systemdelete"], false);
+        // Reply and inline images live in the html, so it must stay unstripped.
+        assert!(out["content"].as_str().unwrap().contains("itemid="));
+    }
+
+    /// A conversation is worth more than its worst message: the client shows
+    /// what decoded instead of an error.
+    #[test]
+    fn one_malformed_message_costs_only_itself() {
+        let payload = format!(
+            r#"{{"messages":[{CHATSVC_MESSAGE},{{"id":"bad","content":42}},{CHATSVC_MESSAGE}]}}"#
+        );
+        let convs: Conversations =
+            serde_json::from_str(&payload).expect("conversation should parse");
+        assert_eq!(convs.messages.len(), 2);
+        assert!(convs
+            .messages
+            .iter()
+            .all(|m| m.id.as_deref() == Some("1700000000000")));
+    }
+
+    /// System messages carry no sender, and with `deserialize_with` serde needs
+    /// `default` to accept that.
+    #[test]
+    fn a_message_without_from_still_decodes() {
+        let msg: Message = serde_json::from_str(
+            r#"{"id":"1","messagetype":"ThreadActivity/AddMember","content":"<addmember/>"}"#,
+        )
+        .expect("payload should parse");
+        assert_eq!(msg.from, None);
+        assert_eq!(
+            msg.message_type.as_deref(),
+            Some("ThreadActivity/AddMember")
+        );
+    }
+
+    #[test]
+    fn a_file_without_file_info_still_decodes() {
+        let msg: Message = serde_json::from_str(
+            r#"{"id":"1","properties":{"files":"[{\"id\":\"f1\",\"fileName\":\"y.docx\"}]"}}"#,
+        )
+        .expect("payload should parse");
+        let files = msg.properties.expect("properties").files.expect("files");
+        assert_eq!(files[0].file_name.as_deref(), Some("y.docx"));
+        assert!(files[0].file_info.is_none());
+    }
+
+    #[test]
+    fn message_from_keeps_the_mri_whatever_the_region() {
+        for region in ["emea", "amer", "apac"] {
+            let url = format!(
+                "https://teams.microsoft.com/api/chatsvc/{region}/v1/users/ME/contacts/8:orgid:u1"
+            );
+            assert_eq!(from_mri(&url).as_deref(), Some("8:orgid:u1"));
+        }
+    }
+
+    #[test]
+    fn message_from_handles_notifications_hosts_and_bare_mris() {
+        assert_eq!(
+            from_mri("https://emea.notifications.skype.net/v1/users/ME/contacts/8:orgid:u1")
+                .as_deref(),
+            Some("8:orgid:u1")
+        );
+        assert_eq!(
+            from_mri("https://notifications.skype.net/v1/users/ME/contacts/8:orgid:u1").as_deref(),
+            Some("8:orgid:u1")
+        );
+        assert_eq!(from_mri("8:orgid:u1").as_deref(), Some("8:orgid:u1"));
+    }
 }

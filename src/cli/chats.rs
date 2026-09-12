@@ -3,11 +3,11 @@ use std::io::{self, Read};
 use std::path::Path;
 
 use anyhow::Result;
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
 use tabled::Tabled;
 
-use crate::api::TeamsClient;
+use crate::api::{TeamsClient, BOT_MRI_PREFIX, DEFAULT_PAGE_SIZE};
 use crate::config::Config;
 use crate::names::{chat_title, resolve_member_names};
 use crate::types::Chat;
@@ -34,6 +34,10 @@ pub enum ChatsSubcommand {
         /// Search/filter chats by member names or title (case-insensitive, all words must match)
         #[arg(short, long)]
         search: Option<String>,
+
+        /// Add each chat's other members to the --format json output
+        #[arg(long)]
+        with_members: bool,
     },
 
     /// Show chat details
@@ -47,9 +51,25 @@ pub enum ChatsSubcommand {
         /// Chat ID
         chat_id: String,
 
-        /// Maximum number of messages to retrieve
-        #[arg(short, long, default_value = "50")]
-        limit: usize,
+        /// Maximum number of messages to retrieve. Also sizes the fetch, so a
+        /// small limit is a smaller and faster response. [default: 50]
+        #[arg(short, long)]
+        limit: Option<usize>,
+
+        /// Message kinds to put in the --format json output, comma separated.
+        /// Human messages only by default.
+        #[arg(long, value_enum, value_delimiter = ',', default_value = "text")]
+        types: Vec<MessageKind>,
+    },
+
+    /// Mark a chat as read
+    Read {
+        /// Chat ID
+        chat_id: String,
+
+        /// Message to read up to. The newest one is looked up when not given.
+        #[arg(short, long)]
+        message_id: Option<String>,
     },
 
     /// Send a message to a chat
@@ -134,7 +154,8 @@ pub enum ChatsSubcommand {
         #[arg(short, long)]
         message_id: String,
 
-        /// Reaction type (like, heart, laugh, surprised, sad, angry, skull)
+        /// Reaction: an emoji key or character (like, heart, 👍), or a custom
+        /// emote's key as it arrives on a message, `<name>;<object id>`
         reaction: String,
 
         /// Remove the reaction instead of adding it
@@ -219,6 +240,19 @@ struct ChatRow {
     unread: String,
     #[tabled(rename = "Type")]
     chat_type: String,
+    /// Off unless --with-members asked for it, so the output existing scripts
+    /// read is unchanged.
+    #[tabled(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    people: Option<Vec<ChatPerson>>,
+}
+
+/// Someone in a chat other than you, in the order the chat lists them. Enough
+/// to draw an avatar: the ID fetches the photo, the name is the fallback.
+#[derive(Debug, Serialize)]
+struct ChatPerson {
+    id: String,
+    name: String,
 }
 
 #[derive(Debug, Serialize, Tabled)]
@@ -316,7 +350,14 @@ struct ReactionRow {
 
 #[derive(Debug, Clone, Serialize)]
 struct ReactionJson {
+    /// The raw key, as Teams stores it. `<name>;<object id>` for a custom emote.
     reaction: String,
+    /// What to draw: the character for a built-in, the tenant's name for a
+    /// custom emote.
+    label: String,
+    /// Set only for a custom emote, and what `emoji image` takes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    object_id: Option<String>,
     user_mri: String,
     user_name: Option<String>,
     timestamp: u64,
@@ -324,11 +365,21 @@ struct ReactionJson {
 
 pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -> Result<()> {
     match cmd.command {
-        ChatsSubcommand::List { limit, search } => list(config, limit, search, format).await,
+        ChatsSubcommand::List {
+            limit,
+            search,
+            with_members,
+        } => list(config, limit, search, with_members, format).await,
         ChatsSubcommand::Show { chat_id } => show(config, &chat_id, format).await,
-        ChatsSubcommand::Messages { chat_id, limit } => {
-            messages(config, &chat_id, limit, format).await
-        }
+        ChatsSubcommand::Messages {
+            chat_id,
+            limit,
+            types,
+        } => messages(config, &chat_id, limit, &types, format).await,
+        ChatsSubcommand::Read {
+            chat_id,
+            message_id,
+        } => read(config, &chat_id, message_id, format).await,
         ChatsSubcommand::Send {
             chat_id_or_message,
             message,
@@ -343,12 +394,14 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
                 config,
                 chat_id_or_message,
                 to,
-                message,
-                stdin,
-                file,
-                markdown,
-                html,
-                &attachments,
+                Body {
+                    message,
+                    stdin,
+                    file,
+                    markdown,
+                    html,
+                    attachments,
+                },
             )
             .await
         }
@@ -396,6 +449,7 @@ async fn list(
     config: &Config,
     limit: usize,
     search: Option<String>,
+    with_members: bool,
     format: OutputFormat,
 ) -> Result<()> {
     let client = TeamsClient::new(config)?;
@@ -437,6 +491,9 @@ async fn list(
                 }
             }
 
+            let people =
+                with_members.then(|| other_members(&chat, &user_names, my_user_id.as_ref()));
+
             Some(ChatRow {
                 id: chat.id,
                 title: truncate(&title, 40),
@@ -447,6 +504,7 @@ async fn list(
                     "No".to_string()
                 },
                 chat_type: chat.chat_type.unwrap_or_else(|| "chat".to_string()),
+                people,
             })
         })
         .take(limit)
@@ -454,6 +512,34 @@ async fn list(
 
     print_output(&rows, format);
     Ok(())
+}
+
+/// The chat's members other than you, named as well as they can be. Bots are
+/// left out: they have no Graph identity and no photo to fetch.
+fn other_members(
+    chat: &Chat,
+    user_names: &HashMap<String, String>,
+    my_user_id: Option<&String>,
+) -> Vec<ChatPerson> {
+    chat.members
+        .iter()
+        .filter(|member| !member.mri.starts_with(BOT_MRI_PREFIX))
+        .filter_map(|member| {
+            let id = member.object_id.as_ref()?;
+            if my_user_id == Some(id) {
+                return None;
+            }
+            let name = user_names
+                .get(id)
+                .cloned()
+                .or_else(|| member.display_name.clone())
+                .unwrap_or_default();
+            Some(ChatPerson {
+                id: id.clone(),
+                name,
+            })
+        })
+        .collect()
 }
 
 /// Get display name for a chat based on members (similar to TUI logic)
@@ -529,22 +615,82 @@ async fn show(config: &Config, chat_id: &str, format: OutputFormat) -> Result<()
     Ok(())
 }
 
+/// A kind of message, grouped by the `messagetype` chatsvc sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum MessageKind {
+    /// A message someone typed: `RichText/Html` or `Text`
+    #[value(name = "text")]
+    Text,
+    /// Members added or removed, topic renames: `ThreadActivity/*`
+    #[value(name = "thread_activity", alias = "thread-activity")]
+    ThreadActivity,
+    /// Call records and other events: `Event/*`
+    #[value(name = "event")]
+    Event,
+    /// Every message the chat returned, whatever its type
+    #[value(name = "all")]
+    All,
+}
+
+/// The kind of a wire `messagetype`. `None` for a type we do not group, which
+/// only `all` selects.
+fn message_kind(message_type: Option<&str>) -> Option<MessageKind> {
+    match message_type? {
+        "RichText/Html" | "Text" => Some(MessageKind::Text),
+        t if t.starts_with("ThreadActivity/") => Some(MessageKind::ThreadActivity),
+        t if t.starts_with("Event/") => Some(MessageKind::Event),
+        _ => None,
+    }
+}
+
+/// True when the output was asked for this message.
+fn wants_message(selected: &[MessageKind], message_type: Option<&str>) -> bool {
+    selected.contains(&MessageKind::All)
+        || message_kind(message_type).is_some_and(|kind| selected.contains(&kind))
+}
+
+/// What `--limit` means when it is not given.
+const DEFAULT_MESSAGE_LIMIT: usize = 50;
+
+/// The page to ask for so `limit` human messages survive the filtering below.
+/// Call records and joins are dropped after the fetch, so ask for a few spare.
+fn page_for(limit: usize) -> usize {
+    limit.saturating_add(20).min(DEFAULT_PAGE_SIZE)
+}
+
 async fn messages(
     config: &Config,
     chat_id: &str,
-    limit: usize,
+    limit: Option<usize>,
+    types: &[MessageKind],
     format: OutputFormat,
 ) -> Result<()> {
     let client = TeamsClient::new(config)?;
-    let conversations = client.get_conversations(chat_id, None).await?;
+    // No --limit keeps the whole page, so what this printed before it could ask
+    // for less, it still prints.
+    let conversations = match limit {
+        Some(limit) => {
+            client
+                .get_conversations_page(chat_id, None, page_for(limit))
+                .await?
+        }
+        None => client.get_conversations(chat_id, None).await?,
+    };
+    let limit = limit.unwrap_or(DEFAULT_MESSAGE_LIMIT);
+
+    let json = matches!(format, OutputFormat::Json);
+    if !json && types != [MessageKind::Text] {
+        eprintln!("note: --types shapes the --format json output only");
+    }
+
+    // A terminal listing wants people talking, not call records, so only the
+    // json output follows --types.
+    let selected: &[MessageKind] = if json { types } else { &[MessageKind::Text] };
 
     let filtered_messages: Vec<_> = conversations
         .messages
         .into_iter()
-        .filter(|m| {
-            m.message_type.as_deref() == Some("RichText/Html")
-                || m.message_type.as_deref() == Some("Text")
-        })
+        .filter(|m| wants_message(selected, m.message_type.as_deref()))
         .take(limit)
         .collect();
 
@@ -595,17 +741,77 @@ async fn messages(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn send(
+/// What `chats read` prints, so a caller can see which message the read
+/// watermark was moved to.
+#[derive(Debug, Serialize)]
+struct ReadJson {
+    chat_id: String,
+    message_id: Option<String>,
+}
+
+async fn read(
     config: &Config,
-    chat_id_or_message: Option<String>,
-    to: Option<String>,
+    chat_id: &str,
+    message_id: Option<String>,
+    format: OutputFormat,
+) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    // The watermark names the newest message you have seen, so one has to be
+    // looked up when the caller names none. A one-message page covers it.
+    let message_id = match message_id {
+        Some(id) => Some(id),
+        None => newest_message_id(&client, chat_id).await?,
+    };
+
+    client
+        .mark_chat_read(chat_id, message_id.as_deref())
+        .await?;
+
+    match format {
+        OutputFormat::Json => print_single(
+            &ReadJson {
+                chat_id: chat_id.to_string(),
+                message_id,
+            },
+            format,
+        ),
+        _ => print_success("Chat marked read"),
+    }
+    Ok(())
+}
+
+/// The newest message in a chat, or None when it holds nothing. The service
+/// hands messages back newest first, so the first of them is the one wanted.
+async fn newest_message_id(client: &TeamsClient, chat_id: &str) -> Result<Option<String>> {
+    let convs = client.get_conversations_page(chat_id, None, 1).await?;
+    Ok(convs.messages.into_iter().find_map(|m| m.id))
+}
+
+/// Where the message body comes from and how to read it. Grouped because they
+/// travel together from the command line to the sent message.
+struct Body {
     message: Option<String>,
     stdin: bool,
     file: Option<String>,
     markdown: bool,
     html: bool,
-    attachments: &[String],
+    attachments: Vec<String>,
+}
+
+async fn send(
+    config: &Config,
+    chat_id_or_message: Option<String>,
+    to: Option<String>,
+    body: Body,
 ) -> Result<()> {
+    let Body {
+        message,
+        stdin,
+        file,
+        markdown,
+        html,
+        attachments,
+    } = body;
     // When --to is used, the first positional arg is the message, not chat_id
     let (chat_id, actual_message) = if to.is_some() {
         (None, chat_id_or_message)
@@ -984,7 +1190,10 @@ async fn files(config: &Config, chat_id: &str, limit: usize, format: OutputForma
                             .unwrap_or_else(|| "Unknown".to_string()),
                         file_type: file.file_type.clone().unwrap_or_else(|| "-".to_string()),
                         file_url: file.object_url.clone().unwrap_or_default(),
-                        share_url: file.file_info.share_url.clone(),
+                        share_url: file
+                            .file_info
+                            .as_ref()
+                            .and_then(|info| info.share_url.clone()),
                     });
                 }
             }
@@ -1041,7 +1250,9 @@ async fn download_file(
                         if file.id.as_deref() == Some(file_id)
                             || file.item_id.as_deref() == Some(file_id)
                         {
-                            if let Some(url) = &file.file_info.file_url {
+                            if let Some(url) =
+                                file.file_info.as_ref().and_then(|i| i.file_url.as_ref())
+                            {
                                 found_url = Some(url.clone());
                                 break;
                             }
@@ -1238,7 +1449,13 @@ async fn reactions(
     format: OutputFormat,
 ) -> Result<()> {
     let client = TeamsClient::new(config)?;
-    let convs = client.get_conversations(chat_id, None).await?;
+
+    // Anchored on the message rather than reading the whole conversation to
+    // find it. A client refreshing one message's reactions calls this on every
+    // update, and paying for two hundred messages each time is most of the cost.
+    let convs = client
+        .get_conversations_page(chat_id, message_id.parse::<u64>().ok(), REACTION_PAGE)
+        .await?;
 
     // Find the specific message
     let message = convs
@@ -1256,9 +1473,12 @@ async fn reactions(
     if let Some(props) = &msg.properties {
         if let Some(emotions) = &props.emotions {
             for emotion in emotions {
+                let emote = crate::api::emoji::custom_emote(&emotion.key);
                 for user in &emotion.users {
                     all_reactions.push(ReactionJson {
                         reaction: emotion.key.clone(),
+                        label: crate::api::emoji::label(&emotion.key),
+                        object_id: emote.as_ref().map(|e| e.object_id.to_string()),
                         user_mri: user.mri.clone(),
                         user_name: None, // Could resolve user names if needed
                         timestamp: user.time,
@@ -1269,7 +1489,12 @@ async fn reactions(
     }
 
     if all_reactions.is_empty() {
-        println!("No reactions on this message.");
+        // An empty list, not a sentence: a caller reading the JSON stream has
+        // to be able to parse "nobody reacted" like any other answer.
+        match format {
+            OutputFormat::Json => print_single(&all_reactions, format),
+            _ => println!("No reactions on this message."),
+        }
         return Ok(());
     }
 
@@ -1294,7 +1519,7 @@ async fn reactions(
                         .unwrap_or_else(|| r.timestamp.to_string());
 
                     ReactionRow {
-                        reaction: r.reaction,
+                        reaction: r.label,
                         user: truncate(&user_display, 36),
                         time,
                     }
@@ -1306,4 +1531,121 @@ async fn reactions(
     }
 
     Ok(())
+}
+
+/// How many messages to ask for around the one being read. The service anchors
+/// the page on it, so a handful is enough and a hundred and ninety-nine of them
+/// would be thrown away.
+const REACTION_PAGE: usize = 4;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::{Cli, Commands};
+    use clap::Parser;
+
+    /// Scripts read this output and assume every row is someone talking.
+    #[test]
+    fn the_default_selection_is_human_messages_only() {
+        let default = [MessageKind::Text];
+        assert!(wants_message(&default, Some("RichText/Html")));
+        assert!(wants_message(&default, Some("Text")));
+        assert!(!wants_message(&default, Some("ThreadActivity/AddMember")));
+        assert!(!wants_message(&default, Some("Event/Call")));
+    }
+
+    #[test]
+    fn system_messages_come_in_when_asked_for() {
+        let selected = [MessageKind::Text, MessageKind::ThreadActivity];
+        assert!(wants_message(&selected, Some("ThreadActivity/TopicUpdate")));
+        assert!(wants_message(&selected, Some("RichText/Html")));
+        assert!(!wants_message(&selected, Some("Event/Call")));
+
+        // `all` also covers the types we do not group.
+        assert!(wants_message(&[MessageKind::All], Some("Event/Call")));
+        assert!(wants_message(
+            &[MessageKind::All],
+            Some("RichText/Media_Card")
+        ));
+        assert!(!wants_message(
+            &[MessageKind::Event],
+            Some("RichText/Media_Card")
+        ));
+    }
+
+    #[test]
+    fn types_parses_a_comma_separated_list() {
+        let cli = Cli::try_parse_from([
+            "squads-cli",
+            "chats",
+            "messages",
+            "19:x@thread.v2",
+            "--types",
+            "text,thread_activity",
+        ])
+        .expect("flag should parse");
+        let Commands::Chats(ChatsCommand {
+            command: ChatsSubcommand::Messages { types, .. },
+        }) = cli.command
+        else {
+            panic!("expected chats messages");
+        };
+        assert_eq!(types, [MessageKind::Text, MessageKind::ThreadActivity]);
+    }
+
+    #[test]
+    fn a_limit_sizes_the_fetch_and_no_limit_keeps_the_whole_page() {
+        // Spare room for the call records dropped after the fetch.
+        assert_eq!(page_for(60), 80);
+        assert_eq!(page_for(1), 21);
+        // Never more than the service hands back anyway.
+        assert_eq!(page_for(500), DEFAULT_PAGE_SIZE);
+        assert_eq!(page_for(usize::MAX), DEFAULT_PAGE_SIZE);
+
+        let cli = Cli::try_parse_from(["squads-cli", "chats", "messages", "19:x@thread.v2"])
+            .expect("no --limit should parse");
+        let Commands::Chats(ChatsCommand {
+            command: ChatsSubcommand::Messages { limit, .. },
+        }) = cli.command
+        else {
+            panic!("expected chats messages");
+        };
+        assert_eq!(limit, None);
+    }
+
+    #[test]
+    fn read_takes_an_optional_message_id() {
+        let cli = Cli::try_parse_from(["squads-cli", "chats", "read", "19:x@thread.v2"])
+            .expect("no --message-id should parse");
+        let Commands::Chats(ChatsCommand {
+            command:
+                ChatsSubcommand::Read {
+                    chat_id,
+                    message_id,
+                },
+        }) = cli.command
+        else {
+            panic!("expected chats read");
+        };
+        assert_eq!(chat_id, "19:x@thread.v2");
+        // Nothing named, so the command looks the newest message up itself.
+        assert_eq!(message_id, None);
+
+        let cli = Cli::try_parse_from([
+            "squads-cli",
+            "chats",
+            "read",
+            "19:x@thread.v2",
+            "--message-id",
+            "1700000000000",
+        ])
+        .expect("flag should parse");
+        let Commands::Chats(ChatsCommand {
+            command: ChatsSubcommand::Read { message_id, .. },
+        }) = cli.command
+        else {
+            panic!("expected chats read");
+        };
+        assert_eq!(message_id.as_deref(), Some("1700000000000"));
+    }
 }

@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -112,6 +113,71 @@ async fn fetch_latest_release() -> Result<Release> {
         .context("Failed to parse release info")
 }
 
+/// Split a version into its numbers and its prerelease. A leading `v` and any
+/// build metadata are dropped: neither changes the order.
+fn parse_version(version: &str) -> (Vec<u64>, Option<&str>) {
+    let version = version.trim().trim_start_matches(['v', 'V']);
+    let version = version.split('+').next().unwrap_or(version);
+    let (core, pre) = match version.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (version, None),
+    };
+    let numbers = core
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect();
+    (numbers, pre)
+}
+
+/// Order two prereleases. Identifiers are compared one dot-separated piece at a
+/// time, numbers below text, and a shorter list below a longer one.
+fn compare_prerelease(a: &str, b: &str) -> Ordering {
+    let mut a = a.split('.');
+    let mut b = b.split('.');
+    loop {
+        let order = match (a.next(), b.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => match (x.parse::<u64>(), y.parse::<u64>()) {
+                (Ok(x), Ok(y)) => x.cmp(&y),
+                (Ok(_), Err(_)) => Ordering::Less,
+                (Err(_), Ok(_)) => Ordering::Greater,
+                (Err(_), Err(_)) => x.cmp(y),
+            },
+        };
+        if order != Ordering::Equal {
+            return order;
+        }
+    }
+}
+
+/// Order two versions the semver way, so a prerelease sits below the release it
+/// leads to.
+fn compare_versions(a: &str, b: &str) -> Ordering {
+    let (a_numbers, a_pre) = parse_version(a);
+    let (b_numbers, b_pre) = parse_version(b);
+    for i in 0..a_numbers.len().max(b_numbers.len()) {
+        let a = a_numbers.get(i).copied().unwrap_or(0);
+        let b = b_numbers.get(i).copied().unwrap_or(0);
+        if a != b {
+            return a.cmp(&b);
+        }
+    }
+    match (a_pre, b_pre) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(a), Some(b)) => compare_prerelease(a, b),
+    }
+}
+
+/// True when moving from `current` to `candidate` is a step forward. An older
+/// release must never be offered as an update.
+fn is_upgrade(candidate: &str, current: &str) -> bool {
+    compare_versions(candidate, current) == Ordering::Greater
+}
+
 /// Check for updates automatically (called on startup)
 /// Returns Some(version) if an update is available
 pub async fn check_for_update(config: &Config) -> Option<String> {
@@ -133,7 +199,7 @@ pub async fn check_for_update(config: &Config) -> Option<String> {
         let elapsed = current_timestamp().saturating_sub(cache.last_check);
         if elapsed < check_interval {
             // Cache is fresh, use cached version
-            if cache.latest_version != current_version {
+            if is_upgrade(&cache.latest_version, &current_version) {
                 return Some(cache.latest_version);
             }
             return None;
@@ -150,7 +216,7 @@ pub async fn check_for_update(config: &Config) -> Option<String> {
     };
     let _ = save_cache(&cache);
 
-    if release.tag_name != current_version {
+    if is_upgrade(&release.tag_name, &current_version) {
         Some(release.tag_name)
     } else {
         None
@@ -182,7 +248,7 @@ pub async fn execute() -> Result<()> {
     println!("Current version: {}", current_version);
     println!("Latest version:  {}", release.tag_name);
 
-    if release.tag_name == current_version {
+    if !is_upgrade(&release.tag_name, &current_version) {
         print_success("Already up to date!");
         return Ok(());
     }
@@ -262,4 +328,48 @@ pub async fn execute() -> Result<()> {
     ));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_same_version_is_not_an_upgrade() {
+        assert_eq!(compare_versions("v1.2.3", "1.2.3"), Ordering::Equal);
+        assert!(!is_upgrade("v0.4.0", "v0.4.0"));
+    }
+
+    #[test]
+    fn an_older_release_is_not_an_upgrade() {
+        assert!(!is_upgrade("v0.3.2", "v0.4.0"));
+        assert!(!is_upgrade("v0.9.9", "v1.0.0"));
+        assert!(!is_upgrade("v1.2.3", "v1.10.0"));
+    }
+
+    #[test]
+    fn a_newer_release_is_an_upgrade() {
+        assert!(is_upgrade("v0.4.1", "v0.4.0"));
+        assert!(is_upgrade("v0.10.0", "v0.9.9"));
+        assert!(is_upgrade("v2.0.0", "v1.99.99"));
+    }
+
+    #[test]
+    fn a_prerelease_sits_below_its_release() {
+        assert!(!is_upgrade("v1.0.0-rc.1", "v1.0.0"));
+        assert!(is_upgrade("v1.0.0", "v1.0.0-rc.1"));
+        assert!(is_upgrade("v1.0.0-rc.2", "v1.0.0-rc.1"));
+        assert!(is_upgrade("v1.0.0-rc.1", "v1.0.0-alpha.1"));
+        assert!(is_upgrade("v1.0.0-alpha.1", "v1.0.0-alpha"));
+    }
+
+    #[test]
+    fn build_metadata_and_short_versions_still_order() {
+        assert_eq!(
+            compare_versions("v1.2.3+build.5", "v1.2.3"),
+            Ordering::Equal
+        );
+        assert_eq!(compare_versions("v1.2", "v1.2.0"), Ordering::Equal);
+        assert!(is_upgrade("v1.3", "v1.2.9"));
+    }
 }

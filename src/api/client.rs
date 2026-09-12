@@ -6,11 +6,12 @@ use anyhow::{anyhow, Context, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Client;
 
+use super::region::{self, Region};
 use super::{
     gen_skype_token, gen_token, renew_refresh_token, SCOPE_CHATSVCAGG, SCOPE_GRAPH, SCOPE_IC3,
     SCOPE_SPACES,
 };
-use crate::cache::{Cache, TOKENS_FILE};
+use crate::cache::{Cache, REGION_FILE, TOKENS_FILE};
 use crate::config::Config;
 use crate::types::*;
 
@@ -51,6 +52,22 @@ pub struct TeamsClient {
     /// Own profile, kept after the first lookup. Sending a message needs it,
     /// and re-fetching it added a Graph round trip to every send.
     me: Arc<RwLock<Option<Profile>>>,
+    /// Tenant region, `None` until discovery lands. Readers fall back to the
+    /// default, so no call has to wait for it.
+    region: Arc<RwLock<Option<Region>>>,
+    /// Trouter endpoint id. Stable for the life of the client: a fresh one
+    /// registers a second endpoint with the service on every reconnect.
+    epid: String,
+    /// Trouter URL to reconnect through, as handed to us by the service.
+    trouter_reconnect_url: Arc<RwLock<Option<String>>>,
+    /// Base URL the current Trouter session listens on. A subscription has to
+    /// name it, and it changes with every session.
+    trouter_surl: Arc<RwLock<Option<String>>>,
+    /// Users we want presence for. A subscription dies with the endpoint, so the
+    /// list is kept and re-sent on every reconnect.
+    presence_users: Arc<RwLock<Vec<String>>>,
+    /// Tenant GUID, read out of a token on first ask.
+    tenant_id: Arc<RwLock<Option<String>>>,
 }
 
 /// A file uploaded to OneDrive and shared, ready for a chat message to point at.
@@ -70,6 +87,57 @@ const MAX_SIMPLE_UPLOAD: u64 = 4 * 1024 * 1024;
 /// name is localised per user, so it is only the fallback when none is found.
 const CHAT_FILES_FOLDER: &str = "Microsoft Teams Chat Files";
 
+/// What a caller that names no page size gets, and the most the service will
+/// hand back in one response.
+pub const DEFAULT_PAGE_SIZE: usize = 200;
+
+/// Whose profile photo is being asked for. Graph keeps people and groups on
+/// separate collections and answers 404 when an id is looked up under the wrong
+/// one, so the caller has to say which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhotoSubject {
+    Person,
+    Group,
+}
+
+impl PhotoSubject {
+    fn path(self) -> &'static str {
+        match self {
+            PhotoSubject::Person => "users",
+            PhotoSubject::Group => "groups",
+        }
+    }
+}
+
+/// Bots and apps have no profile photo, and their MRI is not a Graph id at all.
+pub const BOT_MRI_PREFIX: &str = "28:";
+
+/// The Graph object id inside a Teams MRI, or the id unchanged when it is
+/// already one. `None` for a bot, which Graph knows nothing about.
+pub fn photo_object_id(id: &str) -> Option<&str> {
+    if id.starts_with(BOT_MRI_PREFIX) {
+        return None;
+    }
+    let bare = id
+        .strip_prefix("8:orgid:")
+        .or_else(|| id.strip_prefix("8:lync:"))
+        .unwrap_or(id);
+    (!bare.is_empty()).then_some(bare)
+}
+
+/// The `tid` claim of a JWT: the tenant the token was issued for. The payload
+/// is the middle part, base64url without padding.
+pub fn tenant_from_token(token: &str) -> Option<String> {
+    use base64::Engine;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let tid = claims.get("tid")?.as_str()?;
+    (!tid.is_empty()).then(|| tid.to_string())
+}
+
 /// Pull the GUID out of a driveItem eTag, which looks like `"{GUID},1"`.
 fn etag_guid(etag: &str) -> Option<String> {
     let start = etag.find('{')? + 1;
@@ -82,6 +150,9 @@ impl TeamsClient {
     pub fn new(config: &Config) -> Result<Self> {
         let cache = Cache::new()?;
         let tokens: TokenStore = cache.load(TOKENS_FILE)?.unwrap_or_default();
+        let env_region = region::env_region();
+        let persisted: Option<String> = cache.load(REGION_FILE).unwrap_or_default();
+        let region = region::initial_region(env_region.as_deref(), persisted.as_deref());
 
         Ok(Self {
             tokens: Arc::new(RwLock::new(tokens)),
@@ -91,6 +162,12 @@ impl TeamsClient {
                 .build()?,
             cache,
             me: Arc::new(RwLock::new(None)),
+            region: Arc::new(RwLock::new(region)),
+            epid: uuid::Uuid::new_v4().to_string(),
+            trouter_reconnect_url: Arc::new(RwLock::new(None)),
+            trouter_surl: Arc::new(RwLock::new(None)),
+            presence_users: Arc::new(RwLock::new(Vec::new())),
+            tenant_id: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -120,6 +197,10 @@ impl TeamsClient {
             let mut tokens = self.tokens.write().unwrap();
             tokens.tokens.clear();
         }
+        // The next login may be a tenant in another region, so discover again.
+        *self.region.write().unwrap() =
+            region::initial_region(region::env_region().as_deref(), None);
+        let _ = self.cache.delete(REGION_FILE);
         self.cache.delete(TOKENS_FILE)
     }
 
@@ -200,10 +281,89 @@ impl TeamsClient {
         Ok(new_token)
     }
 
+    /// Region to build a URL with, probing first when we have not learned one.
+    /// Never call it from `ensure_region`: the probe URL carries no region.
+    pub(crate) async fn regional(&self) -> Region {
+        self.ensure_region().await;
+        self.region.read().unwrap().clone().unwrap_or_default()
+    }
+
+    /// Endpoint id Trouter and the registrar know us by.
+    pub(crate) fn trouter_epid(&self) -> &str {
+        &self.epid
+    }
+
+    /// Reconnect URL kept from the last session, if the service gave one.
+    pub(crate) fn trouter_reconnect_url(&self) -> Option<String> {
+        self.trouter_reconnect_url.read().unwrap().clone()
+    }
+
+    pub(crate) fn set_trouter_reconnect_url(&self, url: Option<String>) {
+        *self.trouter_reconnect_url.write().unwrap() = url;
+    }
+
+    /// Base URL of the live Trouter session, `None` between sessions.
+    pub(crate) fn trouter_surl(&self) -> Option<String> {
+        self.trouter_surl.read().unwrap().clone()
+    }
+
+    pub(crate) fn set_trouter_surl(&self, surl: Option<String>) {
+        *self.trouter_surl.write().unwrap() = surl;
+    }
+
+    /// Users the presence subscription covers.
+    pub(crate) fn presence_users(&self) -> Vec<String> {
+        self.presence_users.read().unwrap().clone()
+    }
+
+    pub(crate) fn set_presence_users(&self, users: Vec<String>) {
+        *self.presence_users.write().unwrap() = users;
+    }
+
+    /// The one place a region is learned. Takes any text holding Teams URLs:
+    /// a redirect target, or a payload full of conversation links.
+    fn observe_region(&self, text: &str) {
+        if self.region.read().unwrap().is_some() {
+            return;
+        }
+        let Some(found) = region::extract_region_from_url(text) else {
+            return;
+        };
+        *self.region.write().unwrap() = Some(found.clone());
+        // Losing the write only costs one probe on the next run.
+        let _ = self.cache.save(REGION_FILE, &found.name().to_string());
+    }
+
+    /// Ask the region-less csa endpoint who we are. Teams answers with a
+    /// redirect naming the tenant's region. A failure is not fatal.
+    async fn ensure_region(&self) {
+        if self.region.read().unwrap().is_some() {
+            return;
+        }
+        let Ok(token) = self.get_token(SCOPE_CHATSVCAGG).await else {
+            return;
+        };
+        let res = self
+            .http
+            .get(region::CSA_PROBE_URL)
+            .header("authorization", format!("Bearer {}", token.value))
+            .send()
+            .await;
+        if let Ok(res) = res {
+            if let Some(location) = res
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+            {
+                self.observe_region(location);
+            }
+        }
+    }
+
     /// Get current user's teams and chats
     pub async fn get_user_details(&self) -> Result<UserDetails> {
         let token = self.get_token(SCOPE_CHATSVCAGG).await?;
-        let url = "https://teams.microsoft.com/api/csa/emea/api/v2/teams/users/me";
+        let url = format!("{}/users/me", self.regional().await.csa_base());
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -225,6 +385,8 @@ impl TeamsClient {
 
         if res.status().is_success() {
             let body = res.text().await?;
+            // Chat payloads carry regional links, so this covers a failed probe.
+            self.observe_region(&body);
             serde_json::from_str(&body).context("Failed to parse user details")
         } else {
             let status = res.status();
@@ -373,6 +535,120 @@ impl TeamsClient {
         Ok(res.bytes().await?.to_vec())
     }
 
+    /// A profile photo and its content type, or `None` when there is none.
+    ///
+    /// Most people never set one, and Graph answers 404 for them as well as for
+    /// an id it cannot see at all. Neither is a failure worth an error, so both
+    /// come back as `None` and the caller decides what to say.
+    pub async fn fetch_profile_photo(
+        &self,
+        id: &str,
+        subject: PhotoSubject,
+    ) -> Result<Option<(String, Vec<u8>)>> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/{}/{}/photo/$value",
+            subject.path(),
+            id
+        );
+
+        let res = self
+            .http
+            .get(&url)
+            .header("authorization", format!("Bearer {}", token.value))
+            .send()
+            .await?;
+
+        // 403 joins 404: a tenant that hides its members' photos is no more a
+        // failure than a person who never set one.
+        if res.status() == 404 || res.status() == 403 {
+            return Ok(None);
+        }
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await?;
+            return Err(anyhow!(
+                "Failed to fetch profile photo: {} - {}",
+                status,
+                body
+            ));
+        }
+
+        let content_type = res
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .map(|value| value.trim().to_string())
+            .unwrap_or_else(|| "image/jpeg".to_string());
+        let bytes = res.bytes().await?.to_vec();
+
+        // An empty 200 would otherwise be cached as a zero-byte picture.
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some((content_type, bytes)))
+    }
+
+    /// The tenant the signed-in account belongs to, read out of a token.
+    ///
+    /// Nothing serves it as a field, and a custom emote's image URL is built
+    /// from it. Kept after the first read: it never changes while signed in.
+    pub async fn tenant_id(&self) -> Result<String> {
+        if let Some(known) = self.tenant_id.read().unwrap().clone() {
+            return Ok(known);
+        }
+        let token = self.get_token(SCOPE_IC3).await?;
+        let found = tenant_from_token(&token.value)
+            .ok_or_else(|| anyhow!("No tenant in the access token"))?;
+        *self.tenant_id.write().unwrap() = Some(found.clone());
+        Ok(found)
+    }
+
+    /// A custom emote's animated image and its content type, or `None` when the
+    /// tenant has no such object.
+    ///
+    /// Like a profile photo, "there is none" is not a failure: an emote deleted
+    /// since someone reacted with it leaves the key behind on the message.
+    pub async fn fetch_custom_emote(&self, object_id: &str) -> Result<Option<(String, Vec<u8>)>> {
+        let tenant = self.tenant_id().await?;
+        let token = self.get_token(SCOPE_IC3).await?;
+        let url = self.regional().await.custom_emoji_url(&tenant, object_id);
+
+        let res = self
+            .http
+            .get(&url)
+            .header("authorization", format!("Bearer {}", token.value))
+            .send()
+            .await?;
+
+        if res.status() == 404 || res.status() == 403 {
+            return Ok(None);
+        }
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await?;
+            return Err(anyhow!(
+                "Failed to fetch custom emote: {} - {}",
+                status,
+                body
+            ));
+        }
+
+        let content_type = res
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .map(|value| value.trim().to_string())
+            .unwrap_or_else(|| "image/gif".to_string());
+        let bytes = res.bytes().await?.to_vec();
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some((content_type, bytes)))
+    }
+
     /// Move the chat's read watermark to now, which is what clears its unread
     /// state in Teams. `isRead` is derived from this server side, so without it
     /// a chat stays unread everywhere no matter how often you open it.
@@ -387,7 +663,8 @@ impl TeamsClient {
         let horizon = format!("{};0;{}", now, last_message_id.unwrap_or(&fallback));
 
         let url = format!(
-            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/properties?name=consumptionhorizon",
+            "{}/conversations/{}/properties?name=consumptionhorizon",
+            self.regional().await.chatsvc_base(),
             chat_id
         );
 
@@ -460,6 +737,18 @@ impl TeamsClient {
         thread_id: &str,
         message_id: Option<u64>,
     ) -> Result<Conversations> {
+        self.get_conversations_page(thread_id, message_id, DEFAULT_PAGE_SIZE)
+            .await
+    }
+
+    /// Get conversations/messages from a chat, asking the service for at most
+    /// `page_size` of them. A caller that shows twenty messages pays for twenty.
+    pub async fn get_conversations_page(
+        &self,
+        thread_id: &str,
+        message_id: Option<u64>,
+        page_size: usize,
+    ) -> Result<Conversations> {
         let token = self.get_token(SCOPE_IC3).await?;
 
         let thread_part = match message_id {
@@ -468,8 +757,10 @@ impl TeamsClient {
         };
 
         let url = format!(
-            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages?pageSize=200",
-            thread_part
+            "{}/conversations/{}/messages?pageSize={}",
+            self.regional().await.chatsvc_base(),
+            thread_part,
+            page_size.clamp(1, DEFAULT_PAGE_SIZE)
         );
 
         let mut headers = HeaderMap::new();
@@ -502,8 +793,10 @@ impl TeamsClient {
     ) -> Result<TeamConversations> {
         let token = self.get_token(SCOPE_CHATSVCAGG).await?;
         let url = format!(
-            "https://teams.microsoft.com/api/csa/emea/api/v2/teams/{}/channels/{}",
-            team_id, channel_id
+            "{}/{}/channels/{}",
+            self.regional().await.csa_base(),
+            team_id,
+            channel_id
         );
 
         let mut headers = HeaderMap::new();
@@ -696,7 +989,8 @@ impl TeamsClient {
 
         // Use the channel ID as the conversation ID for the Teams internal API
         let url = format!(
-            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages",
+            "{}/conversations/{}/messages",
+            self.regional().await.chatsvc_base(),
             channel_id
         );
 
@@ -793,7 +1087,8 @@ impl TeamsClient {
         // The thread ID format is: {channel_id};messageid={root_message_id}
         let thread_id = format!("{};messageid={}", channel_id, root_message_id);
         let url = format!(
-            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages",
+            "{}/conversations/{}/messages",
+            self.regional().await.chatsvc_base(),
             thread_id
         );
 
@@ -1094,7 +1389,8 @@ impl TeamsClient {
         let me = self.get_me().await?;
 
         let url = format!(
-            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages",
+            "{}/conversations/{}/messages",
+            self.regional().await.chatsvc_base(),
             conversation_id
         );
 
@@ -1228,8 +1524,10 @@ impl TeamsClient {
     pub async fn delete_message(&self, conversation_id: &str, message_id: &str) -> Result<()> {
         let token = self.get_token(SCOPE_IC3).await?;
         let url = format!(
-            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages/{}",
-            conversation_id, message_id
+            "{}/conversations/{}/messages/{}",
+            self.regional().await.chatsvc_base(),
+            conversation_id,
+            message_id
         );
 
         let mut headers = HeaderMap::new();
@@ -1258,8 +1556,10 @@ impl TeamsClient {
     ) -> Result<()> {
         let token = self.get_token(SCOPE_IC3).await?;
         let url = format!(
-            "https://teams.microsoft.com/api/chatsvc/emea/v1/users/ME/conversations/{}/messages/{}",
-            channel_id, message_id
+            "{}/conversations/{}/messages/{}",
+            self.regional().await.chatsvc_base(),
+            channel_id,
+            message_id
         );
 
         let mut headers = HeaderMap::new();
@@ -1378,6 +1678,16 @@ impl TeamsClient {
         reaction: &str,
         remove: bool,
     ) -> Result<()> {
+        let key = super::emoji::map_to_key(reaction);
+
+        // Graph takes a Unicode character. A custom emote has none, so it goes
+        // the way the web client sends every reaction.
+        if super::emoji::custom_emote(&key).is_some() {
+            return self
+                .set_emotion(conversation_id, message_id, &key, remove)
+                .await;
+        }
+
         let token = self.get_token(SCOPE_GRAPH).await?;
         let unicode = super::emoji::map_to_unicode(reaction);
 
@@ -1437,16 +1747,30 @@ impl TeamsClient {
         reaction: &str,
         remove: bool,
     ) -> Result<()> {
+        let key = super::emoji::map_to_key(reaction);
+        self.set_emotion(channel_id, message_id, &key, remove).await
+    }
+
+    /// Set or clear one reaction on any conversation, chat or channel, through
+    /// the chat service. This is the only route that takes a custom emote: its
+    /// key is a name and an object id, not a character Graph could accept.
+    ///
+    /// Clearing is the same call as DELETE. A PUT carrying a zero time answers
+    /// 200 and leaves the reaction in place, stamped with the time of the call.
+    async fn set_emotion(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        key: &str,
+        remove: bool,
+    ) -> Result<()> {
         let token = self.get_token(SCOPE_IC3).await?;
-        let reaction_key = super::emoji::map_to_key(reaction);
 
-        // URL-encode the channel_id for the URL path
-        let encoded_channel_id = urlencoding::encode(channel_id);
-
-        // Use teams.cloud.microsoft endpoint (same as web client)
         let url = format!(
-            "https://teams.cloud.microsoft/api/chatsvc/emea/v1/users/ME/conversations/{}/messages/{}/properties?name=emotions",
-            encoded_channel_id, message_id
+            "{}/conversations/{}/messages/{}/properties?name=emotions",
+            self.regional().await.chatsvc_cloud_base(),
+            urlencoding::encode(conversation_id),
+            message_id
         );
 
         let mut headers = HeaderMap::new();
@@ -1459,28 +1783,17 @@ impl TeamsClient {
             HeaderValue::from_static("application/json"),
         );
 
-        // Body format from web client: {"emotions":{"key":"like","value":timestamp}}
-        // For removal, value should be 0
-        let now = chrono::Utc::now().timestamp_millis();
-        let body = if remove {
-            serde_json::json!({
-                "emotions": {
-                    "key": reaction_key,
-                    "value": 0
-                }
-            })
-        } else {
-            serde_json::json!({
-                "emotions": {
-                    "key": reaction_key,
-                    "value": now
-                }
-            })
-        };
+        // Body format from the web client. The time is ignored on a DELETE.
+        let body = serde_json::json!({
+            "emotions": { "key": key, "value": chrono::Utc::now().timestamp_millis() }
+        });
 
-        let res = self
-            .http
-            .put(&url)
+        let request = if remove {
+            self.http.delete(&url)
+        } else {
+            self.http.put(&url)
+        };
+        let res = request
             .headers(headers)
             .body(body.to_string())
             .send()
@@ -3167,7 +3480,7 @@ fn is_microsoft_host(url: &str) -> bool {
 
 #[cfg(test)]
 mod picture_host_tests {
-    use super::is_microsoft_host;
+    use super::{is_microsoft_host, photo_object_id, tenant_from_token, PhotoSubject};
 
     #[test]
     fn teams_attachments_are_ours() {
@@ -3201,5 +3514,59 @@ mod picture_host_tests {
         ] {
             assert!(!is_microsoft_host(url), "leaked token to {}", url);
         }
+    }
+
+    /// Nothing in Teams serves the tenant GUID, and the custom emote URL needs
+    /// one. It is only ever read out of a token this client already holds.
+    #[test]
+    fn the_tenant_is_read_out_of_a_token() {
+        use base64::Engine;
+        let claim = |body: &str| {
+            format!(
+                "header.{}.signature",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(body)
+            )
+        };
+        assert_eq!(
+            tenant_from_token(&claim(r#"{"tid":"7f1e2d3c-4b5a-6978-8765-4321fedcba98"}"#)),
+            Some("7f1e2d3c-4b5a-6978-8765-4321fedcba98".to_string())
+        );
+        assert_eq!(tenant_from_token(&claim(r#"{"tid":""}"#)), None);
+        assert_eq!(tenant_from_token(&claim(r#"{"oid":"x"}"#)), None);
+        assert_eq!(tenant_from_token("not.a.token"), None);
+        assert_eq!(tenant_from_token("nodots"), None);
+    }
+
+    #[test]
+    fn a_photo_id_is_taken_out_of_an_mri() {
+        assert_eq!(
+            photo_object_id("8:orgid:1f2e3d4c-5b6a-4789-9012-3456789abcde"),
+            Some("1f2e3d4c-5b6a-4789-9012-3456789abcde")
+        );
+        assert_eq!(
+            photo_object_id("8:lync:1f2e3d4c-5b6a-4789-9012-3456789abcde"),
+            Some("1f2e3d4c-5b6a-4789-9012-3456789abcde")
+        );
+        assert_eq!(
+            photo_object_id("1f2e3d4c-5b6a-4789-9012-3456789abcde"),
+            Some("1f2e3d4c-5b6a-4789-9012-3456789abcde")
+        );
+    }
+
+    /// A bot MRI is not a Graph id, so asking for its photo would be a wasted
+    /// round trip that always fails.
+    #[test]
+    fn a_bot_has_no_photo_to_ask_for() {
+        assert_eq!(
+            photo_object_id("28:0d8b9b4e-4e0e-4f00-8000-000000000000"),
+            None
+        );
+        assert_eq!(photo_object_id(""), None);
+    }
+
+    #[test]
+    fn people_and_groups_sit_on_different_graph_paths() {
+        assert_eq!(PhotoSubject::Person.path(), "users");
+        assert_eq!(PhotoSubject::Group.path(), "groups");
     }
 }

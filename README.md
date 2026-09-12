@@ -13,8 +13,10 @@ A command-line interface for Microsoft Teams, designed for AI agents (Claude Cod
 - **Interactive TUI**: A terminal user interface for a more visual experience
 - **CLI-first design**: JSON output format optimized for AI agents
 - **Teams support**: Browse teams and channels
+- **Reactions**: Add and remove them, your tenant's own emotes included
 - **User management**: Search and view user profiles
 - **Activity feed**: View notifications and mentions
+- **Real-time watch**: Stream messages, edits, typing and read receipts as JSON lines
 - **Personal Notes**: Shortcut command to manage your personal notes chat
 
 ## Installation
@@ -67,8 +69,20 @@ squads-cli chats list --limit 20
 squads-cli chats list --search "john"
 squads-cli chats list --search "john alice"  # finds "John Doe & Alice Smith"
 
+# Add each chat's other members, with their IDs, to the JSON output
+squads-cli chats list --format json --with-members
+
 # Get chat messages
 squads-cli chats messages <chat-id>
+
+# Add system messages to the JSON output (members added, topic renames, calls)
+squads-cli chats messages <chat-id> --format json --types text,thread_activity
+squads-cli chats messages <chat-id> --format json --types all
+
+# Mark a chat as read (clears its unread state in Teams, everywhere)
+squads-cli chats read <chat-id>
+# Read up to a message you already have, which saves the lookup
+squads-cli chats read <chat-id> --message-id <msg-id>
 
 # Send a message
 squads-cli chats send <chat-id> "Hello, World!"
@@ -85,11 +99,91 @@ squads-cli chats reply <chat-id> --message-id <msg-id> "My reply"
 # React to a message (full support for Teams emojis by name or character)
 squads-cli chats react <chat-id> --message-id <msg-id> unicornhead
 squads-cli chats react <chat-id> --message-id <msg-id> 🦄
+squads-cli chats react <chat-id> --message-id <msg-id> like --remove
+
+# React with one of your tenant's own emotes, by its key
+squads-cli chats react <chat-id> --message-id <msg-id> 'hurray;0-weu-d7-8f1c2a…'
+
+# Who reacted, and with what
+squads-cli chats reactions <chat-id> --message-id <msg-id>
 
 # Download a file (supports piping to stdout)
 squads-cli chats download-file <chat-id> <file-url> --output "file.docx"
 # We recommend using piping for AI agents to process files without saving to disk
 squads-cli chats download-file <chat-id> <file-url> -o - | textutil -convert txt -stdin -stdout
+```
+
+A reaction key is either a built-in emoji name, such as `like`, or a custom
+emote your tenant uploaded, which is `<name>;<object id>`. The semicolon is the
+whole of the difference: a tenant is free to call its own emote `heart`, so the
+name alone says nothing. `chats reactions --format json` gives you both — the
+raw `reaction`, the `label` to draw, and an `object_id` on a custom emote only.
+
+`chats read` moves the chat's read watermark to now, which is what Teams
+derives `unread` from. Opening a chat in a client of your own changes nothing
+until you call it. Without `--message-id` it looks the newest message up first,
+so it costs one extra fetch.
+
+`chats messages` returns human messages only, so existing scripts see no change.
+`--types` adds the other kinds to the `--format json` output:
+
+| `--types` value | What it adds | Wire `messagetype` |
+|---|---|---|
+| `text` | messages someone typed (the default) | `RichText/Html`, `Text` |
+| `thread_activity` | members added or removed, topic renames | `ThreadActivity/*` |
+| `event` | call records | `Event/*` |
+| `all` | every message the chat returned | any |
+
+The table and plain output always show human messages only: a terminal listing does
+not want call records.
+
+A message that fails to decode is skipped, not fatal. The count and the message id
+go to stderr, so the rest of the conversation still loads.
+
+### Watch (real-time)
+
+```bash
+# Follow new messages in the terminal
+squads-cli watch --push
+
+# One JSON line per new message, for scripts and agents
+squads-cli watch --json
+
+# Put other real-time events on the same stream
+squads-cli watch --json --events message,typing,read
+squads-cli watch --json --events all
+
+# Only one chat
+squads-cli watch --json --chat "19:abc@thread.v2"
+
+# Also stream what you sent yourself, from this or any other device
+squads-cli watch --json --include-self
+```
+
+`--json` prints one JSON object per line. Every line carries `event`, `time` and
+`source`. Only `message` is sent by default, so existing consumers see no change.
+
+| `event` | Meaning | Fields on top of `event`, `time`, `source` |
+|---|---|---|
+| `message` | a new chat message | `chat_id`, `message_id`, `from`, `from_mri`, `content` |
+| `message_update` | an edit, or a reaction landing on a message | same as `message` |
+| `typing` | someone is typing | `chat_id`, `from` (usually empty) |
+| `read` | someone moved their read marker | `chat_id` |
+| `message_loss` | events were dropped, so resync | none |
+| `presence` | a user's availability changed | `user_id`, `availability` |
+
+How the filters apply:
+
+- `--chat` filters the chat events: `message`, `message_update`, `typing` and `read`. `message_loss` and `presence` are account-wide and always pass
+- your own messages and your own edits are dropped, unless you pass `--include-self`
+- `message` is de-duplicated by `message_id`. `message_update` is not, because an edit reuses the id
+- the terminal output (`--push` without `--json`) shows messages only, whatever `--events` says
+- `presence` is parsed and emitted, but nothing subscribes to presence yet, so the stream is quiet until it does
+
+`--include-self` is for a chat client: a message you send from your phone belongs in the
+thread, and moves that chat to the top of the list. A notifier wants the default, where
+your own traffic is noise. The flag covers `message` and `message_update` on both the
+push and the polling path, so your own edits arrive too.
 
 ### Personal Notes
 
@@ -199,7 +293,48 @@ squads-cli users list --search "John"
 
 # Show current user
 squads-cli users me
+
+# Download someone's profile photo
+squads-cli users photo <user-id> --output avatar.jpg
+squads-cli users photo alice@example.com --output avatar.jpg
+
+# A team's photo, by the group ID in `teams show`
+squads-cli users photo <group-id> --group --output team.jpg
+
+# Straight to stdout
+squads-cli users photo <user-id> -o - | open -f -a Preview
 ```
+
+Most people never set a photo. `users photo` says so on stderr and exits **3**,
+which is not the **1** a real failure exits with, so a caller can remember
+"nobody set one" instead of retrying. With `--format json` it prints
+`{"id": "...", "found": false}` and still exits 3.
+
+### Emoji and custom emotes
+
+```bash
+# Every built-in Teams emoji: key, character and name, in Teams' own order
+squads-cli emoji list
+squads-cli emoji list --search crown
+
+# A custom emote's image, by the reaction key or by the object ID alone
+squads-cli emoji image 'hurray;0-weu-d7-8f1c2a…' --output hurray.png
+squads-cli emoji image 0-weu-d7-8f1c2a… -o - | open -f -a Preview
+```
+
+An emote deleted since someone reacted with it leaves its key on the message.
+`emoji image` says so on stderr and exits **3**, the same way `users photo`
+reports a person with no photo, so a caller can remember the answer rather than
+retrying. With `--format json` it prints `{"key": "...", "found": false}` and
+still exits 3.
+
+`emoji list` is what turns a reaction key into something to draw. It answers
+from a cache, so it costs one download the first time and nothing afterwards.
+
+`--with-members` on `chats list` adds a `people` array to each chat: the other
+members, in the order Teams lists them, each with the object ID `users photo`
+takes and a display name for the fallback. It costs no extra request, and the
+table output is unchanged.
 
 ### Activity
 

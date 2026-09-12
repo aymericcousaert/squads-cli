@@ -25,7 +25,12 @@ async fn main() -> Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "squads_cli=info".into()),
         )
-        .with(tracing_subscriber::fmt::layer().with_target(false))
+        // Diagnostics go to stderr: stdout carries the --json stream.
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_writer(std::io::stderr),
+        )
         .init();
 
     let cli = Cli::parse();
@@ -36,9 +41,12 @@ async fn main() -> Result<()> {
     // Initialize emoji mapping
     api::emoji::init().await?;
 
-    // Check for updates (async, non-blocking notification)
-    if let Some(new_version) = cli::update::check_for_update(&config).await {
-        cli::update::notify_update_available(&new_version);
+    // Check for updates (async, non-blocking notification). A machine-readable
+    // run has no one to read a nag, so it is not shown one.
+    if !cli.machine_readable() {
+        if let Some(new_version) = cli::update::check_for_update(&config).await {
+            cli::update::notify_update_available(&new_version);
+        }
     }
 
     // Execute command
@@ -46,6 +54,7 @@ async fn main() -> Result<()> {
         Commands::Auth(cmd) => cli::auth::execute(cmd, &config).await,
         Commands::Chats(cmd) => cli::chats::execute(cmd, &config, cli.format).await,
         Commands::Teams(cmd) => cli::teams::execute(cmd, &config, cli.format).await,
+        Commands::Emoji(cmd) => cli::emoji::execute(cmd, &config, cli.format).await,
         Commands::Users(cmd) => cli::users::execute(cmd, &config, cli.format).await,
         Commands::Activity(cmd) => cli::activity::execute(cmd, &config, cli.format).await,
         Commands::Mail(cmd) => cli::mail::execute(cmd, &config, cli.format).await,
