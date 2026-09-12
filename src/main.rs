@@ -54,6 +54,7 @@ async fn main() -> Result<()> {
         Commands::Auth(cmd) => cli::auth::execute(cmd, &config).await,
         Commands::Chats(cmd) => cli::chats::execute(cmd, &config, cli.format).await,
         Commands::Teams(cmd) => cli::teams::execute(cmd, &config, cli.format).await,
+        Commands::Emoji(cmd) => cli::emoji::execute(cmd, &config, cli.format).await,
         Commands::Users(cmd) => cli::users::execute(cmd, &config, cli.format).await,
         Commands::Activity(cmd) => cli::activity::execute(cmd, &config, cli.format).await,
         Commands::Mail(cmd) => cli::mail::execute(cmd, &config, cli.format).await,

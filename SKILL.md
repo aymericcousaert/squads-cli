@@ -34,8 +34,8 @@ Search across both Mail and Calendar simultaneously.
   - Support for `--markdown` and `--stdin`.
 - **Reply**: `squads-cli chats reply <chat-id> --message-id <msg-id> "<content>"`
   - Support for `--markdown`.
-- **React**: `squads-cli chats react <chat-id> --message-id <msg-id> <reaction>` (Supports all Teams emojis by name like `unicornhead`, `meltingface`, or characters like `🦄`)
-- **View Reactions**: `squads-cli chats reactions <chat-id> --message-id <msg-id>` (see who reacted to a message)
+- **React**: `squads-cli chats react <chat-id> --message-id <msg-id> <reaction>` (Supports all Teams emojis by name like `unicornhead`, `meltingface`, or characters like `🦄`, and your tenant's own emotes by their key). Use `--remove` to take one back.
+- **View Reactions**: `squads-cli chats reactions <chat-id> --message-id <msg-id>` (see who reacted to a message). With `--format json` each row carries the raw `reaction` key, the `label` to draw, and an `object_id` on a custom emote only. No reactions prints `[]`.
 - **View Mentions**: `squads-cli chats mentions` (find messages where you are @mentioned)
 - **List Files**: `squads-cli chats files <chat-id>` (list files shared in a chat)
 - **Download File**: `squads-cli chats download-file <chat-id> <file-id> --output ./file.pdf`
@@ -65,7 +65,13 @@ Search across both Mail and Calendar simultaneously.
 - **Check User Presence**: `squads-cli users presence --user "<email>"` (specific user)
 - **Check Multiple Users**: `squads-cli users presence --users "email1,email2"` (multiple users)
 
-### 6. Teams Channels
+### 6. Emoji and Custom Emotes
+- **List Emoji**: `squads-cli emoji list` (every built-in Teams emoji: key, character, name, in Teams' own order; `--search <text>`, `--limit <n>`). Answers from a cache.
+- **Emote Image**: `squads-cli emoji image <key|object-id> --output <file>` (`-o -` writes the bytes to stdout). **Exit 3 means the tenant has no such emote** — not a failure, so cache the answer rather than retrying.
+- **Telling them apart**: a reaction `key` is a built-in emoji name (`like`) or a custom emote, which is `<name>;<object id>`. The semicolon is the only difference: a tenant may name its own emote `heart`, so never decide on the name. A skin tone arrives as `<key>-tone1` … `-tone5` and is still a built-in.
+- **Withdrawn reactions**: taking a reaction back leaves its key on the message with an empty `users` list. Nobody reacted, so do not draw it.
+
+### 7. Teams Channels
 - **List Teams**: `squads-cli teams list`
 - **List Channels**: `squads-cli teams channels <team-id>`
 - **View Messages**: `squads-cli teams messages <team-id> <channel-id>` (includes reactions column)
@@ -79,18 +85,18 @@ Search across both Mail and Calendar simultaneously.
 - **List Images**: `squads-cli teams images <team-id> <channel-id>` (list images in channel messages)
 - **Download Image**: `squads-cli teams download-image <url> --output ./image.png`
 
-### 7. Unified Feed
+### 8. Unified Feed
 - **View All Activity**: `squads-cli feed` (combined view of chats and emails)
 - **Filter by Mentions**: `squads-cli feed --mentions-only` (only items where you are @mentioned)
 - **Filter Unread**: `squads-cli feed --unread`
 
-### 8. Personal Notes
+### 9. Personal Notes
 Shortcut to manage your personal "Notes" chat.
 - **List Notes**: `squads-cli notes list`
 - **Add Note**: `squads-cli notes add "<content>"` (Supports `--markdown` and `--stdin`)
 - **Delete Note**: `squads-cli notes delete <msg-id>`
 
-### 9. Real-time Watch
+### 10. Real-time Watch
 Stream Teams events as they happen, one JSON object per line.
 - **Follow Messages**: `squads-cli watch --json`
 - **Widen the Stream**: `squads-cli watch --json --events all` (or a comma list: `--events message,typing,read`)

@@ -3,6 +3,7 @@ pub mod auth;
 pub mod calendar;
 pub mod chats;
 pub mod completions;
+pub mod emoji;
 pub mod feed;
 pub mod install;
 pub mod mail;
@@ -49,6 +50,9 @@ pub enum Commands {
 
     /// Teams operations
     Teams(teams::TeamsCommand),
+
+    /// Emoji and custom emotes
+    Emoji(emoji::EmojiCommand),
 
     /// User operations
     Users(users::UsersCommand),

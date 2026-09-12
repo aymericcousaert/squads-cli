@@ -66,6 +66,8 @@ pub struct TeamsClient {
     /// Users we want presence for. A subscription dies with the endpoint, so the
     /// list is kept and re-sent on every reconnect.
     presence_users: Arc<RwLock<Vec<String>>>,
+    /// Tenant GUID, read out of a token on first ask.
+    tenant_id: Arc<RwLock<Option<String>>>,
 }
 
 /// A file uploaded to OneDrive and shared, ready for a chat message to point at.
@@ -123,6 +125,19 @@ pub fn photo_object_id(id: &str) -> Option<&str> {
     (!bare.is_empty()).then_some(bare)
 }
 
+/// The `tid` claim of a JWT: the tenant the token was issued for. The payload
+/// is the middle part, base64url without padding.
+pub fn tenant_from_token(token: &str) -> Option<String> {
+    use base64::Engine;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let tid = claims.get("tid")?.as_str()?;
+    (!tid.is_empty()).then(|| tid.to_string())
+}
+
 /// Pull the GUID out of a driveItem eTag, which looks like `"{GUID},1"`.
 fn etag_guid(etag: &str) -> Option<String> {
     let start = etag.find('{')? + 1;
@@ -152,6 +167,7 @@ impl TeamsClient {
             trouter_reconnect_url: Arc::new(RwLock::new(None)),
             trouter_surl: Arc::new(RwLock::new(None)),
             presence_users: Arc::new(RwLock::new(Vec::new())),
+            tenant_id: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -568,6 +584,65 @@ impl TeamsClient {
         let bytes = res.bytes().await?.to_vec();
 
         // An empty 200 would otherwise be cached as a zero-byte picture.
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some((content_type, bytes)))
+    }
+
+    /// The tenant the signed-in account belongs to, read out of a token.
+    ///
+    /// Nothing serves it as a field, and a custom emote's image URL is built
+    /// from it. Kept after the first read: it never changes while signed in.
+    pub async fn tenant_id(&self) -> Result<String> {
+        if let Some(known) = self.tenant_id.read().unwrap().clone() {
+            return Ok(known);
+        }
+        let token = self.get_token(SCOPE_IC3).await?;
+        let found = tenant_from_token(&token.value)
+            .ok_or_else(|| anyhow!("No tenant in the access token"))?;
+        *self.tenant_id.write().unwrap() = Some(found.clone());
+        Ok(found)
+    }
+
+    /// A custom emote's animated image and its content type, or `None` when the
+    /// tenant has no such object.
+    ///
+    /// Like a profile photo, "there is none" is not a failure: an emote deleted
+    /// since someone reacted with it leaves the key behind on the message.
+    pub async fn fetch_custom_emote(&self, object_id: &str) -> Result<Option<(String, Vec<u8>)>> {
+        let tenant = self.tenant_id().await?;
+        let token = self.get_token(SCOPE_IC3).await?;
+        let url = self.regional().await.custom_emoji_url(&tenant, object_id);
+
+        let res = self
+            .http
+            .get(&url)
+            .header("authorization", format!("Bearer {}", token.value))
+            .send()
+            .await?;
+
+        if res.status() == 404 || res.status() == 403 {
+            return Ok(None);
+        }
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await?;
+            return Err(anyhow!(
+                "Failed to fetch custom emote: {} - {}",
+                status,
+                body
+            ));
+        }
+
+        let content_type = res
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .map(|value| value.trim().to_string())
+            .unwrap_or_else(|| "image/gif".to_string());
+        let bytes = res.bytes().await?.to_vec();
         if bytes.is_empty() {
             return Ok(None);
         }
@@ -1603,6 +1678,16 @@ impl TeamsClient {
         reaction: &str,
         remove: bool,
     ) -> Result<()> {
+        let key = super::emoji::map_to_key(reaction);
+
+        // Graph takes a Unicode character. A custom emote has none, so it goes
+        // the way the web client sends every reaction.
+        if super::emoji::custom_emote(&key).is_some() {
+            return self
+                .set_emotion(conversation_id, message_id, &key, remove)
+                .await;
+        }
+
         let token = self.get_token(SCOPE_GRAPH).await?;
         let unicode = super::emoji::map_to_unicode(reaction);
 
@@ -1662,17 +1747,29 @@ impl TeamsClient {
         reaction: &str,
         remove: bool,
     ) -> Result<()> {
+        let key = super::emoji::map_to_key(reaction);
+        self.set_emotion(channel_id, message_id, &key, remove).await
+    }
+
+    /// Set or clear one reaction on any conversation, chat or channel, through
+    /// the chat service. This is the only route that takes a custom emote: its
+    /// key is a name and an object id, not a character Graph could accept.
+    ///
+    /// Clearing is the same call as DELETE. A PUT carrying a zero time answers
+    /// 200 and leaves the reaction in place, stamped with the time of the call.
+    async fn set_emotion(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        key: &str,
+        remove: bool,
+    ) -> Result<()> {
         let token = self.get_token(SCOPE_IC3).await?;
-        let reaction_key = super::emoji::map_to_key(reaction);
 
-        // URL-encode the channel_id for the URL path
-        let encoded_channel_id = urlencoding::encode(channel_id);
-
-        // Use teams.cloud.microsoft endpoint (same as web client)
         let url = format!(
             "{}/conversations/{}/messages/{}/properties?name=emotions",
             self.regional().await.chatsvc_cloud_base(),
-            encoded_channel_id,
+            urlencoding::encode(conversation_id),
             message_id
         );
 
@@ -1686,28 +1783,17 @@ impl TeamsClient {
             HeaderValue::from_static("application/json"),
         );
 
-        // Body format from web client: {"emotions":{"key":"like","value":timestamp}}
-        // For removal, value should be 0
-        let now = chrono::Utc::now().timestamp_millis();
-        let body = if remove {
-            serde_json::json!({
-                "emotions": {
-                    "key": reaction_key,
-                    "value": 0
-                }
-            })
-        } else {
-            serde_json::json!({
-                "emotions": {
-                    "key": reaction_key,
-                    "value": now
-                }
-            })
-        };
+        // Body format from the web client. The time is ignored on a DELETE.
+        let body = serde_json::json!({
+            "emotions": { "key": key, "value": chrono::Utc::now().timestamp_millis() }
+        });
 
-        let res = self
-            .http
-            .put(&url)
+        let request = if remove {
+            self.http.delete(&url)
+        } else {
+            self.http.put(&url)
+        };
+        let res = request
             .headers(headers)
             .body(body.to_string())
             .send()
@@ -3394,7 +3480,7 @@ fn is_microsoft_host(url: &str) -> bool {
 
 #[cfg(test)]
 mod picture_host_tests {
-    use super::{is_microsoft_host, photo_object_id, PhotoSubject};
+    use super::{is_microsoft_host, photo_object_id, tenant_from_token, PhotoSubject};
 
     #[test]
     fn teams_attachments_are_ours() {
@@ -3428,6 +3514,27 @@ mod picture_host_tests {
         ] {
             assert!(!is_microsoft_host(url), "leaked token to {}", url);
         }
+    }
+
+    /// Nothing in Teams serves the tenant GUID, and the custom emote URL needs
+    /// one. It is only ever read out of a token this client already holds.
+    #[test]
+    fn the_tenant_is_read_out_of_a_token() {
+        use base64::Engine;
+        let claim = |body: &str| {
+            format!(
+                "header.{}.signature",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(body)
+            )
+        };
+        assert_eq!(
+            tenant_from_token(&claim(r#"{"tid":"7f1e2d3c-4b5a-6978-8765-4321fedcba98"}"#)),
+            Some("7f1e2d3c-4b5a-6978-8765-4321fedcba98".to_string())
+        );
+        assert_eq!(tenant_from_token(&claim(r#"{"tid":""}"#)), None);
+        assert_eq!(tenant_from_token(&claim(r#"{"oid":"x"}"#)), None);
+        assert_eq!(tenant_from_token("not.a.token"), None);
+        assert_eq!(tenant_from_token("nodots"), None);
     }
 
     #[test]

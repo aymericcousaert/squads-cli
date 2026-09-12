@@ -154,7 +154,8 @@ pub enum ChatsSubcommand {
         #[arg(short, long)]
         message_id: String,
 
-        /// Reaction type (like, heart, laugh, surprised, sad, angry, skull)
+        /// Reaction: an emoji key or character (like, heart, 👍), or a custom
+        /// emote's key as it arrives on a message, `<name>;<object id>`
         reaction: String,
 
         /// Remove the reaction instead of adding it
@@ -349,7 +350,14 @@ struct ReactionRow {
 
 #[derive(Debug, Clone, Serialize)]
 struct ReactionJson {
+    /// The raw key, as Teams stores it. `<name>;<object id>` for a custom emote.
     reaction: String,
+    /// What to draw: the character for a built-in, the tenant's name for a
+    /// custom emote.
+    label: String,
+    /// Set only for a custom emote, and what `emoji image` takes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    object_id: Option<String>,
     user_mri: String,
     user_name: Option<String>,
     timestamp: u64,
@@ -1425,7 +1433,13 @@ async fn reactions(
     format: OutputFormat,
 ) -> Result<()> {
     let client = TeamsClient::new(config)?;
-    let convs = client.get_conversations(chat_id, None).await?;
+
+    // Anchored on the message rather than reading the whole conversation to
+    // find it. A client refreshing one message's reactions calls this on every
+    // update, and paying for two hundred messages each time is most of the cost.
+    let convs = client
+        .get_conversations_page(chat_id, message_id.parse::<u64>().ok(), REACTION_PAGE)
+        .await?;
 
     // Find the specific message
     let message = convs
@@ -1443,9 +1457,12 @@ async fn reactions(
     if let Some(props) = &msg.properties {
         if let Some(emotions) = &props.emotions {
             for emotion in emotions {
+                let emote = crate::api::emoji::custom_emote(&emotion.key);
                 for user in &emotion.users {
                     all_reactions.push(ReactionJson {
                         reaction: emotion.key.clone(),
+                        label: crate::api::emoji::label(&emotion.key),
+                        object_id: emote.as_ref().map(|e| e.object_id.to_string()),
                         user_mri: user.mri.clone(),
                         user_name: None, // Could resolve user names if needed
                         timestamp: user.time,
@@ -1456,7 +1473,12 @@ async fn reactions(
     }
 
     if all_reactions.is_empty() {
-        println!("No reactions on this message.");
+        // An empty list, not a sentence: a caller reading the JSON stream has
+        // to be able to parse "nobody reacted" like any other answer.
+        match format {
+            OutputFormat::Json => print_single(&all_reactions, format),
+            _ => println!("No reactions on this message."),
+        }
         return Ok(());
     }
 
@@ -1481,7 +1503,7 @@ async fn reactions(
                         .unwrap_or_else(|| r.timestamp.to_string());
 
                     ReactionRow {
-                        reaction: r.reaction,
+                        reaction: r.label,
                         user: truncate(&user_display, 36),
                         time,
                     }
@@ -1494,6 +1516,11 @@ async fn reactions(
 
     Ok(())
 }
+
+/// How many messages to ask for around the one being read. The service anchors
+/// the page on it, so a handful is enough and a hundred and ninety-nine of them
+/// would be thrown away.
+const REACTION_PAGE: usize = 4;
 
 #[cfg(test)]
 mod tests {

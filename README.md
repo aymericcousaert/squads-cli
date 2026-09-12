@@ -13,6 +13,7 @@ A command-line interface for Microsoft Teams, designed for AI agents (Claude Cod
 - **Interactive TUI**: A terminal user interface for a more visual experience
 - **CLI-first design**: JSON output format optimized for AI agents
 - **Teams support**: Browse teams and channels
+- **Reactions**: Add and remove them, your tenant's own emotes included
 - **User management**: Search and view user profiles
 - **Activity feed**: View notifications and mentions
 - **Real-time watch**: Stream messages, edits, typing and read receipts as JSON lines
@@ -98,12 +99,25 @@ squads-cli chats reply <chat-id> --message-id <msg-id> "My reply"
 # React to a message (full support for Teams emojis by name or character)
 squads-cli chats react <chat-id> --message-id <msg-id> unicornhead
 squads-cli chats react <chat-id> --message-id <msg-id> 🦄
+squads-cli chats react <chat-id> --message-id <msg-id> like --remove
+
+# React with one of your tenant's own emotes, by its key
+squads-cli chats react <chat-id> --message-id <msg-id> 'hurray;0-weu-d7-8f1c2a…'
+
+# Who reacted, and with what
+squads-cli chats reactions <chat-id> --message-id <msg-id>
 
 # Download a file (supports piping to stdout)
 squads-cli chats download-file <chat-id> <file-url> --output "file.docx"
 # We recommend using piping for AI agents to process files without saving to disk
 squads-cli chats download-file <chat-id> <file-url> -o - | textutil -convert txt -stdin -stdout
 ```
+
+A reaction key is either a built-in emoji name, such as `like`, or a custom
+emote your tenant uploaded, which is `<name>;<object id>`. The semicolon is the
+whole of the difference: a tenant is free to call its own emote `heart`, so the
+name alone says nothing. `chats reactions --format json` gives you both — the
+raw `reaction`, the `label` to draw, and an `object_id` on a custom emote only.
 
 `chats read` moves the chat's read watermark to now, which is what Teams
 derives `unread` from. Opening a chat in a client of your own changes nothing
@@ -295,6 +309,27 @@ Most people never set a photo. `users photo` says so on stderr and exits **3**,
 which is not the **1** a real failure exits with, so a caller can remember
 "nobody set one" instead of retrying. With `--format json` it prints
 `{"id": "...", "found": false}` and still exits 3.
+
+### Emoji and custom emotes
+
+```bash
+# Every built-in Teams emoji: key, character and name, in Teams' own order
+squads-cli emoji list
+squads-cli emoji list --search crown
+
+# A custom emote's image, by the reaction key or by the object ID alone
+squads-cli emoji image 'hurray;0-weu-d7-8f1c2a…' --output hurray.png
+squads-cli emoji image 0-weu-d7-8f1c2a… -o - | open -f -a Preview
+```
+
+An emote deleted since someone reacted with it leaves its key on the message.
+`emoji image` says so on stderr and exits **3**, the same way `users photo`
+reports a person with no photo, so a caller can remember the answer rather than
+retrying. With `--format json` it prints `{"key": "...", "found": false}` and
+still exits 3.
+
+`emoji list` is what turns a reaction key into something to draw. It answers
+from a cache, so it costs one download the first time and nothing afterwards.
 
 `--with-members` on `chats list` adds a `people` array to each chat: the other
 members, in the order Teams lists them, each with the object ID `users photo`
