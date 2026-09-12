@@ -89,6 +89,40 @@ const CHAT_FILES_FOLDER: &str = "Microsoft Teams Chat Files";
 /// hand back in one response.
 pub const DEFAULT_PAGE_SIZE: usize = 200;
 
+/// Whose profile photo is being asked for. Graph keeps people and groups on
+/// separate collections and answers 404 when an id is looked up under the wrong
+/// one, so the caller has to say which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhotoSubject {
+    Person,
+    Group,
+}
+
+impl PhotoSubject {
+    fn path(self) -> &'static str {
+        match self {
+            PhotoSubject::Person => "users",
+            PhotoSubject::Group => "groups",
+        }
+    }
+}
+
+/// Bots and apps have no profile photo, and their MRI is not a Graph id at all.
+pub const BOT_MRI_PREFIX: &str = "28:";
+
+/// The Graph object id inside a Teams MRI, or the id unchanged when it is
+/// already one. `None` for a bot, which Graph knows nothing about.
+pub fn photo_object_id(id: &str) -> Option<&str> {
+    if id.starts_with(BOT_MRI_PREFIX) {
+        return None;
+    }
+    let bare = id
+        .strip_prefix("8:orgid:")
+        .or_else(|| id.strip_prefix("8:lync:"))
+        .unwrap_or(id);
+    (!bare.is_empty()).then_some(bare)
+}
+
 /// Pull the GUID out of a driveItem eTag, which looks like `"{GUID},1"`.
 fn etag_guid(etag: &str) -> Option<String> {
     let start = etag.find('{')? + 1;
@@ -483,6 +517,61 @@ impl TeamsClient {
             return Err(anyhow!("Failed to fetch picture: {}", res.status()));
         }
         Ok(res.bytes().await?.to_vec())
+    }
+
+    /// A profile photo and its content type, or `None` when there is none.
+    ///
+    /// Most people never set one, and Graph answers 404 for them as well as for
+    /// an id it cannot see at all. Neither is a failure worth an error, so both
+    /// come back as `None` and the caller decides what to say.
+    pub async fn fetch_profile_photo(
+        &self,
+        id: &str,
+        subject: PhotoSubject,
+    ) -> Result<Option<(String, Vec<u8>)>> {
+        let token = self.get_token(SCOPE_GRAPH).await?;
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/{}/{}/photo/$value",
+            subject.path(),
+            id
+        );
+
+        let res = self
+            .http
+            .get(&url)
+            .header("authorization", format!("Bearer {}", token.value))
+            .send()
+            .await?;
+
+        // 403 joins 404: a tenant that hides its members' photos is no more a
+        // failure than a person who never set one.
+        if res.status() == 404 || res.status() == 403 {
+            return Ok(None);
+        }
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await?;
+            return Err(anyhow!(
+                "Failed to fetch profile photo: {} - {}",
+                status,
+                body
+            ));
+        }
+
+        let content_type = res
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .map(|value| value.trim().to_string())
+            .unwrap_or_else(|| "image/jpeg".to_string());
+        let bytes = res.bytes().await?.to_vec();
+
+        // An empty 200 would otherwise be cached as a zero-byte picture.
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some((content_type, bytes)))
     }
 
     /// Move the chat's read watermark to now, which is what clears its unread
@@ -3305,7 +3394,7 @@ fn is_microsoft_host(url: &str) -> bool {
 
 #[cfg(test)]
 mod picture_host_tests {
-    use super::is_microsoft_host;
+    use super::{is_microsoft_host, photo_object_id, PhotoSubject};
 
     #[test]
     fn teams_attachments_are_ours() {
@@ -3339,5 +3428,38 @@ mod picture_host_tests {
         ] {
             assert!(!is_microsoft_host(url), "leaked token to {}", url);
         }
+    }
+
+    #[test]
+    fn a_photo_id_is_taken_out_of_an_mri() {
+        assert_eq!(
+            photo_object_id("8:orgid:1f2e3d4c-5b6a-4789-9012-3456789abcde"),
+            Some("1f2e3d4c-5b6a-4789-9012-3456789abcde")
+        );
+        assert_eq!(
+            photo_object_id("8:lync:1f2e3d4c-5b6a-4789-9012-3456789abcde"),
+            Some("1f2e3d4c-5b6a-4789-9012-3456789abcde")
+        );
+        assert_eq!(
+            photo_object_id("1f2e3d4c-5b6a-4789-9012-3456789abcde"),
+            Some("1f2e3d4c-5b6a-4789-9012-3456789abcde")
+        );
+    }
+
+    /// A bot MRI is not a Graph id, so asking for its photo would be a wasted
+    /// round trip that always fails.
+    #[test]
+    fn a_bot_has_no_photo_to_ask_for() {
+        assert_eq!(
+            photo_object_id("28:0d8b9b4e-4e0e-4f00-8000-000000000000"),
+            None
+        );
+        assert_eq!(photo_object_id(""), None);
+    }
+
+    #[test]
+    fn people_and_groups_sit_on_different_graph_paths() {
+        assert_eq!(PhotoSubject::Person.path(), "users");
+        assert_eq!(PhotoSubject::Group.path(), "groups");
     }
 }

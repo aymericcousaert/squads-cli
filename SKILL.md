@@ -20,6 +20,7 @@ Search across both Mail and Calendar simultaneously.
 - **List Chats**: `squads-cli chats list` (supports `--limit <N>`, `--search "<name>"`)
   - Search by member names or title: `squads-cli chats list --search "john"`
   - Group chats display member names (e.g., "John Doe & Alice Smith") instead of "Group (X members)"
+- **List Chats with Members**: `squads-cli chats list --format json --with-members` (adds `people`: each other member's object ID and name, for avatars)
 - **View Messages**: `squads-cli chats messages <chat-id>` (includes reactions column)
   - **System messages**: `--types` widens the `--format json` output: `text` (default, human messages), `thread_activity` (members added or removed, topic renames), `event` (calls), `all`. Comma separated. The table output stays human messages only.
 - **Mark as Read**: `squads-cli chats read <chat-id>` (clears the chat's unread state in Teams; `--message-id <msg-id>` skips the newest-message lookup)
@@ -59,6 +60,7 @@ Search across both Mail and Calendar simultaneously.
 
 ### 5. User Operations
 - **Search Users**: `squads-cli users search "<name or email>"` (find users by name or email)
+- **Profile Photo**: `squads-cli users photo <user-id|MRI|email> --output <file>` (`-o -` writes the bytes to stdout; `--group <group-id>` fetches a team's photo). **Exit 3 means nobody set a photo** — not a failure, so cache the answer rather than retrying.
 - **Check Presence**: `squads-cli users presence` (your own presence)
 - **Check User Presence**: `squads-cli users presence --user "<email>"` (specific user)
 - **Check Multiple Users**: `squads-cli users presence --users "email1,email2"` (multiple users)

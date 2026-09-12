@@ -68,6 +68,9 @@ squads-cli chats list --limit 20
 squads-cli chats list --search "john"
 squads-cli chats list --search "john alice"  # finds "John Doe & Alice Smith"
 
+# Add each chat's other members, with their IDs, to the JSON output
+squads-cli chats list --format json --with-members
+
 # Get chat messages
 squads-cli chats messages <chat-id>
 
@@ -276,7 +279,27 @@ squads-cli users list --search "John"
 
 # Show current user
 squads-cli users me
+
+# Download someone's profile photo
+squads-cli users photo <user-id> --output avatar.jpg
+squads-cli users photo alice@example.com --output avatar.jpg
+
+# A team's photo, by the group ID in `teams show`
+squads-cli users photo <group-id> --group --output team.jpg
+
+# Straight to stdout
+squads-cli users photo <user-id> -o - | open -f -a Preview
 ```
+
+Most people never set a photo. `users photo` says so on stderr and exits **3**,
+which is not the **1** a real failure exits with, so a caller can remember
+"nobody set one" instead of retrying. With `--format json` it prints
+`{"id": "...", "found": false}` and still exits 3.
+
+`--with-members` on `chats list` adds a `people` array to each chat: the other
+members, in the order Teams lists them, each with the object ID `users photo`
+takes and a display name for the fallback. It costs no extra request, and the
+table output is unchanged.
 
 ### Activity
 

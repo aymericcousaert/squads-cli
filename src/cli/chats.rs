@@ -7,7 +7,7 @@ use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
 use tabled::Tabled;
 
-use crate::api::{TeamsClient, DEFAULT_PAGE_SIZE};
+use crate::api::{TeamsClient, BOT_MRI_PREFIX, DEFAULT_PAGE_SIZE};
 use crate::config::Config;
 use crate::names::{chat_title, resolve_member_names};
 use crate::types::Chat;
@@ -34,6 +34,10 @@ pub enum ChatsSubcommand {
         /// Search/filter chats by member names or title (case-insensitive, all words must match)
         #[arg(short, long)]
         search: Option<String>,
+
+        /// Add each chat's other members to the --format json output
+        #[arg(long)]
+        with_members: bool,
     },
 
     /// Show chat details
@@ -235,6 +239,19 @@ struct ChatRow {
     unread: String,
     #[tabled(rename = "Type")]
     chat_type: String,
+    /// Off unless --with-members asked for it, so the output existing scripts
+    /// read is unchanged.
+    #[tabled(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    people: Option<Vec<ChatPerson>>,
+}
+
+/// Someone in a chat other than you, in the order the chat lists them. Enough
+/// to draw an avatar: the ID fetches the photo, the name is the fallback.
+#[derive(Debug, Serialize)]
+struct ChatPerson {
+    id: String,
+    name: String,
 }
 
 #[derive(Debug, Serialize, Tabled)]
@@ -340,7 +357,11 @@ struct ReactionJson {
 
 pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -> Result<()> {
     match cmd.command {
-        ChatsSubcommand::List { limit, search } => list(config, limit, search, format).await,
+        ChatsSubcommand::List {
+            limit,
+            search,
+            with_members,
+        } => list(config, limit, search, with_members, format).await,
         ChatsSubcommand::Show { chat_id } => show(config, &chat_id, format).await,
         ChatsSubcommand::Messages {
             chat_id,
@@ -418,6 +439,7 @@ async fn list(
     config: &Config,
     limit: usize,
     search: Option<String>,
+    with_members: bool,
     format: OutputFormat,
 ) -> Result<()> {
     let client = TeamsClient::new(config)?;
@@ -459,6 +481,9 @@ async fn list(
                 }
             }
 
+            let people =
+                with_members.then(|| other_members(&chat, &user_names, my_user_id.as_ref()));
+
             Some(ChatRow {
                 id: chat.id,
                 title: truncate(&title, 40),
@@ -469,6 +494,7 @@ async fn list(
                     "No".to_string()
                 },
                 chat_type: chat.chat_type.unwrap_or_else(|| "chat".to_string()),
+                people,
             })
         })
         .take(limit)
@@ -476,6 +502,34 @@ async fn list(
 
     print_output(&rows, format);
     Ok(())
+}
+
+/// The chat's members other than you, named as well as they can be. Bots are
+/// left out: they have no Graph identity and no photo to fetch.
+fn other_members(
+    chat: &Chat,
+    user_names: &HashMap<String, String>,
+    my_user_id: Option<&String>,
+) -> Vec<ChatPerson> {
+    chat.members
+        .iter()
+        .filter(|member| !member.mri.starts_with(BOT_MRI_PREFIX))
+        .filter_map(|member| {
+            let id = member.object_id.as_ref()?;
+            if my_user_id == Some(id) {
+                return None;
+            }
+            let name = user_names
+                .get(id)
+                .cloned()
+                .or_else(|| member.display_name.clone())
+                .unwrap_or_default();
+            Some(ChatPerson {
+                id: id.clone(),
+                name,
+            })
+        })
+        .collect()
 }
 
 /// Get display name for a chat based on members (similar to TUI logic)
