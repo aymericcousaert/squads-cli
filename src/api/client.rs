@@ -3177,9 +3177,7 @@ mod picture_host_tests {
         assert!(is_microsoft_host(
             "https://statics.teams.cdn.office.net/x.png"
         ));
-        assert!(is_microsoft_host(
-            "https://acme.sharepoint.com/a.jpg"
-        ));
+        assert!(is_microsoft_host("https://acme.sharepoint.com/a.jpg"));
     }
 
     #[test]
