@@ -581,13 +581,21 @@ fn event_line(ev: &TrouterEvent, time: &str) -> serde_json::Value {
 
 /// The message shape, unchanged since the first --json release apart from `event`.
 /// Adding or renaming a field here breaks every consumer.
+/// When Teams took the message, read out of its id. A message id is the compose
+/// time in milliseconds, so a reconnect that replays a backlog does not stamp
+/// every message with the moment we happened to read it.
+fn composed_at(message_id: &str) -> Option<String> {
+    let millis: i64 = message_id.parse().ok()?;
+    chrono::DateTime::from_timestamp_millis(millis).map(|t| t.to_rfc3339())
+}
+
 fn message_line(event: &str, m: &TrouterMessage, time: &str) -> serde_json::Value {
     serde_json::json!({
         "chat_id": m.chat_id,
         "message_id": m.message_id,
         "from": m.from,
         "from_mri": m.from_mri,
-        "time": time,
+        "time": composed_at(&m.message_id).unwrap_or_else(|| time.to_string()),
         "content": strip_html(&m.content),
         "source": "push",
         "event": event,
@@ -687,10 +695,38 @@ mod tests {
     }
 
     #[test]
+    fn a_message_is_timed_by_teams_not_by_us() {
+        let m = TrouterMessage {
+            chat_id: "19:abc@thread.v2".into(),
+            from_mri: "8:orgid:u1".into(),
+            from: "Ada Fenwick".into(),
+            content: "<p>hi</p>".into(),
+            message_id: "1893537901424".into(),
+            message_type: "RichText/Html".into(),
+        };
+        let line = message_line("message", &m, "2030-01-02T11:40:43+00:00");
+        assert_eq!(line["time"], "2030-01-01T22:45:01.424+00:00");
+    }
+
+    #[test]
+    fn a_message_id_that_is_not_a_time_keeps_the_line_time() {
+        let m = TrouterMessage {
+            chat_id: "19:abc@thread.v2".into(),
+            from_mri: "8:orgid:u1".into(),
+            from: "Ada Fenwick".into(),
+            content: "hi".into(),
+            message_id: "not-a-number".into(),
+            message_type: "Text".into(),
+        };
+        let line = message_line("message", &m, "2030-01-02T11:40:43+00:00");
+        assert_eq!(line["time"], "2030-01-02T11:40:43+00:00");
+    }
+
+    #[test]
     fn a_message_keeps_the_published_shape() {
         assert_eq!(
             line(&TrouterEvent::NewMessage(message())),
-            r#"{"chat_id":"19:abc@thread.v2","content":"hello you","event":"message","from":"Ada Fenwick","from_mri":"8:orgid:u1","message_id":"1700000000000","source":"push","time":"2030-01-01T10:00:00+00:00"}"#
+            r#"{"chat_id":"19:abc@thread.v2","content":"hello you","event":"message","from":"Ada Fenwick","from_mri":"8:orgid:u1","message_id":"1700000000000","source":"push","time":"2023-11-14T22:13:20+00:00"}"#
         );
     }
 
@@ -698,7 +734,7 @@ mod tests {
     fn an_update_uses_the_message_shape() {
         assert_eq!(
             line(&TrouterEvent::MessageUpdate(message())),
-            r#"{"chat_id":"19:abc@thread.v2","content":"hello you","event":"message_update","from":"Ada Fenwick","from_mri":"8:orgid:u1","message_id":"1700000000000","source":"push","time":"2030-01-01T10:00:00+00:00"}"#
+            r#"{"chat_id":"19:abc@thread.v2","content":"hello you","event":"message_update","from":"Ada Fenwick","from_mri":"8:orgid:u1","message_id":"1700000000000","source":"push","time":"2023-11-14T22:13:20+00:00"}"#
         );
     }
 
