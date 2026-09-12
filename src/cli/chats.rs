@@ -394,12 +394,14 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
                 config,
                 chat_id_or_message,
                 to,
-                message,
-                stdin,
-                file,
-                markdown,
-                html,
-                &attachments,
+                Body {
+                    message,
+                    stdin,
+                    file,
+                    markdown,
+                    html,
+                    attachments,
+                },
             )
             .await
         }
@@ -785,17 +787,31 @@ async fn newest_message_id(client: &TeamsClient, chat_id: &str) -> Result<Option
     Ok(convs.messages.into_iter().find_map(|m| m.id))
 }
 
-async fn send(
-    config: &Config,
-    chat_id_or_message: Option<String>,
-    to: Option<String>,
+/// Where the message body comes from and how to read it. Grouped because they
+/// travel together from the command line to the sent message.
+struct Body {
     message: Option<String>,
     stdin: bool,
     file: Option<String>,
     markdown: bool,
     html: bool,
-    attachments: &[String],
+    attachments: Vec<String>,
+}
+
+async fn send(
+    config: &Config,
+    chat_id_or_message: Option<String>,
+    to: Option<String>,
+    body: Body,
 ) -> Result<()> {
+    let Body {
+        message,
+        stdin,
+        file,
+        markdown,
+        html,
+        attachments,
+    } = body;
     // When --to is used, the first positional arg is the message, not chat_id
     let (chat_id, actual_message) = if to.is_some() {
         (None, chat_id_or_message)
