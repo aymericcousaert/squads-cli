@@ -10,21 +10,48 @@ pub fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
+/// Whether what a tag separates should not be run together. Inline tags are
+/// left out: a space inside `<b>bold</b>face` would be one the message never had.
+fn breaks_line(tag: &str) -> bool {
+    let name = tag
+        .trim_start_matches('/')
+        .split([' ', '\t', '\n', '/'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "quote" | "legacyquote" | "p" | "div" | "br" | "li" | "tr" | "blockquote"
+    )
+}
+
 pub fn strip_html(s: &str) -> String {
     let mut result = String::new();
     let mut in_tag = false;
+    let mut tag = String::new();
 
     for c in s.chars() {
         match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
+            '<' => {
+                in_tag = true;
+                tag.clear();
+            }
+            '>' => {
+                in_tag = false;
+                // A quoted reply is one tag after another with no whitespace
+                // between them, so dropping the tag alone joins the author to
+                // the line below it.
+                if breaks_line(&tag) {
+                    result.push(' ');
+                }
+            }
             '\n' | '\r' => {
                 if !in_tag {
                     result.push(' ');
                 }
             }
-            _ if !in_tag => result.push(c),
-            _ => {}
+            _ if in_tag => tag.push(c),
+            _ => result.push(c),
         }
     }
 
@@ -225,6 +252,28 @@ pub mod message {
 
         fn stub(key: &str) -> Option<String> {
             (key == "smileeyes").then(|| "😊".to_string())
+        }
+
+        /// What a quoted reply looks like on the wire: the author's name and
+        /// the line they wrote, with no whitespace between the tags.
+        #[test]
+        fn a_quoted_reply_does_not_run_together() {
+            let html = "<blockquote itemscope itemtype=\"http://schema.skype.com/Reply\">\
+                <strong itemprop=\"mri\">Ada Fenwick</strong>\
+                <span itemprop=\"time\"></span>\
+                <p itemprop=\"preview\">Can we switch glossary at any time?</p>\
+                </blockquote><p>yes, it is independent</p>";
+            assert_eq!(
+                strip_html(html),
+                "Ada Fenwick Can we switch glossary at any time? yes, it is independent"
+            );
+        }
+
+        /// The other half of it: a tag inside a word is not a space.
+        #[test]
+        fn inline_tags_do_not_add_spaces() {
+            assert_eq!(strip_html("<b>bold</b>face"), "boldface");
+            assert_eq!(strip_html("<p>one</p><p>two</p>"), "one two");
         }
 
         #[test]
