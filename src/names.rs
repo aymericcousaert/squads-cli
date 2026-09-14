@@ -5,7 +5,7 @@ use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::api::{TeamsClient, SCOPE_GRAPH, SCOPE_IC3};
-use crate::cache::{Cache, USERS_FILE};
+use crate::cache::{Cache, UNKNOWN_USERS_FILE, USERS_FILE};
 use crate::types::Chat;
 
 /// Parallel Graph user lookups when listing chats.
@@ -15,6 +15,10 @@ const MESSAGES_CONCURRENCY: usize = 4;
 /// How long a cached display name stays usable. People rename themselves, and
 /// nothing else clears this cache.
 const NAME_CACHE_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+/// How long a member no source could name is left alone. Shorter than a name
+/// that was found: this is a gap that a new account or a repaired directory
+/// entry can close, and the cost of being wrong is one lookup.
+const UNKNOWN_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 
 /// A display name on disk, with the time it was resolved.
 #[derive(Serialize, Deserialize)]
@@ -66,6 +70,18 @@ fn read_cache(now: u64) -> (HashMap<String, CachedName>, usize) {
     (cached, loaded)
 }
 
+/// Members an earlier run could not name, and gave up on until the entry ages
+/// out. Without this every run pays the message fallback again for the same
+/// handful of users, which is the slowest part of listing chats.
+fn read_unknown(now: u64) -> HashMap<String, u64> {
+    let mut unknown: HashMap<String, u64> = Cache::new()
+        .ok()
+        .and_then(|c| c.load(UNKNOWN_USERS_FILE).ok().flatten())
+        .unwrap_or_default();
+    unknown.retain(|_, at| now.saturating_sub(*at) < UNKNOWN_CACHE_TTL_SECS);
+    unknown
+}
+
 /// Resolve the display names of chat members, keyed by user object ID.
 ///
 /// Sources are tried cheapest first: the on-disk cache, then Graph, then chat
@@ -80,6 +96,7 @@ pub async fn resolve_member_names(
     let now = epoch_secs();
     let cache = Cache::new().ok();
     let (cached, loaded_count) = read_cache(now);
+    let unknown = read_unknown(now);
 
     let mut names: HashMap<String, String> = cached
         .iter()
@@ -95,11 +112,14 @@ pub async fn resolve_member_names(
     let mut missing: Vec<String> = Vec::new();
     for chat in &untitled {
         for id in member_ids(chat, my_user_id) {
-            if !names.contains_key(&id) && !missing.contains(&id) {
+            if !names.contains_key(&id) && !unknown.contains_key(&id) && !missing.contains(&id) {
                 missing.push(id);
             }
         }
     }
+    // Everyone asked after on this run. Those still nameless at the end are
+    // written down as such, so the next run does not repeat the search.
+    let asked = missing.clone();
 
     // Mint the token before fanning out: parallel requests would each mint
     // their own and each rewrite the token cache, which can corrupt it. Without
@@ -143,7 +163,7 @@ pub async fn resolve_member_names(
                 })
                 .filter_map(|member| member.object_id.clone())
                 .filter(|id| my_user_id != Some(id.as_str()))
-                .filter(|id| !names.contains_key(id))
+                .filter(|id| !names.contains_key(id) && !unknown.contains_key(id))
                 .collect();
             if ids.is_empty() {
                 return None;
@@ -170,6 +190,15 @@ pub async fn resolve_member_names(
         }
     }
 
+    let still_unknown = give_up_on(&asked, &names, &unknown, now);
+    if still_unknown.len() != unknown.len()
+        || still_unknown.keys().any(|id| !unknown.contains_key(*id))
+    {
+        if let Some(cache) = &cache {
+            let _ = cache.save(UNKNOWN_USERS_FILE, &still_unknown);
+        }
+    }
+
     // Rewrite only when something moved: new names found, or expired ones dropped.
     if names.len() != cached.len() || cached.len() != loaded_count {
         if let Some(cache) = &cache {
@@ -193,9 +222,76 @@ pub async fn resolve_member_names(
     names
 }
 
+/// Who to stop looking for: everyone asked after on this run who still has no
+/// name, and everyone an earlier run already gave up on. A name found since
+/// drops out, so a user who joins the directory later is not left out for good.
+///
+/// An entry keeps the time it was first written rather than taking `now`, or
+/// giving up would renew itself on every run and never expire.
+fn give_up_on<'a>(
+    asked: &'a [String],
+    names: &HashMap<String, String>,
+    unknown: &'a HashMap<String, u64>,
+    now: u64,
+) -> HashMap<&'a str, u64> {
+    asked
+        .iter()
+        .map(|id| (id.as_str(), now))
+        .chain(unknown.iter().map(|(id, at)| (id.as_str(), *at)))
+        .filter(|(id, _)| !names.contains_key(*id))
+        .collect()
+}
+
 fn epoch_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOW: u64 = 1_789_377_029;
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The whole point: a member nobody can name is written down, so the next
+    /// run skips the message fallback that cost more than a second.
+    #[test]
+    fn a_member_no_source_can_name_is_given_up_on() {
+        let asked = ids(&["u1"]);
+        let unknown = HashMap::new();
+        let gave_up = give_up_on(&asked, &HashMap::new(), &unknown, NOW);
+        assert_eq!(gave_up.get("u1"), Some(&NOW));
+    }
+
+    #[test]
+    fn a_member_who_was_named_is_not_given_up_on() {
+        let asked = ids(&["u1"]);
+        let names = HashMap::from([("u1".to_string(), "Ada Fenwick".to_string())]);
+        assert!(give_up_on(&asked, &names, &HashMap::new(), NOW).is_empty());
+    }
+
+    /// A name found since clears the entry, so someone who joins the directory
+    /// later is not left nameless until the file ages out.
+    #[test]
+    fn finding_a_name_clears_an_earlier_giving_up() {
+        let unknown = HashMap::from([("u1".to_string(), NOW - 60)]);
+        let names = HashMap::from([("u1".to_string(), "Ada Fenwick".to_string())]);
+        assert!(give_up_on(&[], &names, &unknown, NOW).is_empty());
+    }
+
+    /// Taking `now` here would push the expiry out on every run, and the entry
+    /// would never age out at all.
+    #[test]
+    fn an_older_entry_keeps_the_time_it_was_written() {
+        let asked = ids(&["u1"]);
+        let unknown = HashMap::from([("u1".to_string(), NOW - 3600)]);
+        let gave_up = give_up_on(&asked, &HashMap::new(), &unknown, NOW);
+        assert_eq!(gave_up.get("u1"), Some(&(NOW - 3600)));
+    }
 }
