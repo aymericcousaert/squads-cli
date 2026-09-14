@@ -63,6 +63,9 @@ pub enum WatchEvent {
     /// Someone moved their read marker in a chat
     #[value(name = "read")]
     Read,
+    /// Your own unread state for a chat changed
+    #[value(name = "unread")]
+    Unread,
     /// Events were dropped and the consumer has to resync
     #[value(name = "message_loss", alias = "message-loss")]
     MessageLoss,
@@ -524,6 +527,7 @@ fn event_kind(ev: &TrouterEvent) -> WatchEvent {
         TrouterEvent::MessageUpdate(_) => WatchEvent::MessageUpdate,
         TrouterEvent::Typing { .. } => WatchEvent::Typing,
         TrouterEvent::ReadHorizon { .. } => WatchEvent::Read,
+        TrouterEvent::Unread { .. } => WatchEvent::Unread,
         TrouterEvent::MessageLoss => WatchEvent::MessageLoss,
         TrouterEvent::Presence { .. } => WatchEvent::Presence,
     }
@@ -534,9 +538,9 @@ fn event_kind(ev: &TrouterEvent) -> WatchEvent {
 fn event_chat_id(ev: &TrouterEvent) -> Option<&str> {
     match ev {
         TrouterEvent::NewMessage(m) | TrouterEvent::MessageUpdate(m) => Some(&m.chat_id),
-        TrouterEvent::Typing { chat_id, .. } | TrouterEvent::ReadHorizon { chat_id } => {
-            Some(chat_id)
-        }
+        TrouterEvent::Typing { chat_id, .. }
+        | TrouterEvent::ReadHorizon { chat_id, .. }
+        | TrouterEvent::Unread { chat_id, .. } => Some(chat_id),
         TrouterEvent::MessageLoss | TrouterEvent::Presence { .. } => None,
     }
 }
@@ -555,9 +559,19 @@ fn event_line(ev: &TrouterEvent, time: &str) -> serde_json::Value {
             "time": time,
             "source": "push",
         }),
-        TrouterEvent::ReadHorizon { chat_id } => serde_json::json!({
+        TrouterEvent::ReadHorizon { chat_id, from_mri } => serde_json::json!({
             "event": "read",
             "chat_id": chat_id,
+            // Who read it. Empty when Teams sent a horizon naming nobody.
+            "from_mri": from_mri,
+            "time": time,
+            "source": "push",
+        }),
+        TrouterEvent::Unread { chat_id, unread } => serde_json::json!({
+            "event": "unread",
+            "chat_id": chat_id,
+            // What your read marker says now, not what anyone else has seen.
+            "unread": unread,
             "time": time,
             "source": "push",
         }),
@@ -597,6 +611,10 @@ fn message_line(event: &str, m: &TrouterMessage, time: &str) -> serde_json::Valu
         "from_mri": m.from_mri,
         "time": composed_at(&m.message_id).unwrap_or_else(|| time.to_string()),
         "content": strip_html(&m.content),
+        // The same message as Teams sent it. `content` flattens a quoted reply
+        // into one run of text, which is all a terminal can show but throws
+        // away what a window can draw.
+        "content_html": m.content,
         "source": "push",
         "event": event,
     })
@@ -726,7 +744,7 @@ mod tests {
     fn a_message_keeps_the_published_shape() {
         assert_eq!(
             line(&TrouterEvent::NewMessage(message())),
-            r#"{"chat_id":"19:abc@thread.v2","content":"hello you","event":"message","from":"Ada Fenwick","from_mri":"8:orgid:u1","message_id":"1700000000000","source":"push","time":"2023-11-14T22:13:20+00:00"}"#
+            r#"{"chat_id":"19:abc@thread.v2","content":"hello you","content_html":"<p>hello <b>you</b></p>","event":"message","from":"Ada Fenwick","from_mri":"8:orgid:u1","message_id":"1700000000000","source":"push","time":"2023-11-14T22:13:20+00:00"}"#
         );
     }
 
@@ -734,7 +752,18 @@ mod tests {
     fn an_update_uses_the_message_shape() {
         assert_eq!(
             line(&TrouterEvent::MessageUpdate(message())),
-            r#"{"chat_id":"19:abc@thread.v2","content":"hello you","event":"message_update","from":"Ada Fenwick","from_mri":"8:orgid:u1","message_id":"1700000000000","source":"push","time":"2023-11-14T22:13:20+00:00"}"#
+            r#"{"chat_id":"19:abc@thread.v2","content":"hello you","content_html":"<p>hello <b>you</b></p>","event":"message_update","from":"Ada Fenwick","from_mri":"8:orgid:u1","message_id":"1700000000000","source":"push","time":"2023-11-14T22:13:20+00:00"}"#
+        );
+    }
+
+    #[test]
+    fn an_unread_change_carries_the_chat_and_the_state() {
+        assert_eq!(
+            line(&TrouterEvent::Unread {
+                chat_id: "19:abc@thread.v2".to_string(),
+                unread: true,
+            }),
+            r#"{"chat_id":"19:abc@thread.v2","event":"unread","source":"push","time":"2030-01-01T10:00:00+00:00","unread":true}"#
         );
     }
 
@@ -750,12 +779,13 @@ mod tests {
     }
 
     #[test]
-    fn a_read_marker_carries_the_chat() {
+    fn a_read_marker_carries_the_chat_and_who_read_it() {
         assert_eq!(
             line(&TrouterEvent::ReadHorizon {
                 chat_id: "19:abc@thread.v2".to_string(),
+                from_mri: "8:orgid:u1".to_string(),
             }),
-            r#"{"chat_id":"19:abc@thread.v2","event":"read","source":"push","time":"2030-01-01T10:00:00+00:00"}"#
+            r#"{"chat_id":"19:abc@thread.v2","event":"read","from_mri":"8:orgid:u1","source":"push","time":"2030-01-01T10:00:00+00:00"}"#
         );
     }
 
@@ -786,7 +816,8 @@ mod tests {
         );
         assert_eq!(
             event_chat_id(&TrouterEvent::ReadHorizon {
-                chat_id: "19:abc@thread.v2".to_string()
+                chat_id: "19:abc@thread.v2".to_string(),
+                from_mri: String::new(),
             }),
             Some("19:abc@thread.v2")
         );

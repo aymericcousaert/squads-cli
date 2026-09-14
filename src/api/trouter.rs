@@ -77,8 +77,9 @@ pub enum TrouterEvent {
     NewMessage(TrouterMessage),
     /// An existing message changed: an edit, or a reaction landing on it.
     MessageUpdate(TrouterMessage),
-    /// Someone moved their read marker in a chat.
-    ReadHorizon { chat_id: String },
+    /// Someone moved their read marker in a chat. `from_mri` is who did it,
+    /// which is what tells your own read on another device from a colleague's.
+    ReadHorizon { chat_id: String, from_mri: String },
     /// Someone is typing in a chat.
     Typing { chat_id: String, from: String },
     /// A user's availability changed.
@@ -86,6 +87,10 @@ pub enum TrouterEvent {
         user_id: String,
         availability: String,
     },
+    /// Your own read state for a chat changed: a message you have not read
+    /// arrived, or you read the chat here or on another device. The only
+    /// event that speaks for you rather than for the other members.
+    Unread { chat_id: String, unread: bool },
     /// The service dropped notifications it could not deliver. Whatever they
     /// carried has to be picked up by a resync.
     MessageLoss,
@@ -507,6 +512,15 @@ fn parse_messaging(req: &Value, url: &str) -> Option<TrouterEvent> {
         return None;
     };
     let resource_type = body["resourceType"].as_str().unwrap_or_default();
+    // The one frame that carries your own read marker. It names the chat in
+    // `id` rather than in a conversationLink, so it is taken before the
+    // chat id is looked for below.
+    if resource_type == "ConversationUpdate" {
+        return conversation_update(resource).or_else(|| {
+            log_unhandled(url, "conversation update with no horizon");
+            None
+        });
+    }
     let message_type = resource["messagetype"].as_str().unwrap_or_default();
     let chat_id = match resource["conversationLink"]
         .as_str()
@@ -525,9 +539,10 @@ fn parse_messaging(req: &Value, url: &str) -> Option<TrouterEvent> {
     // Teams also labels control messages as resourceType "NewMessage", so the
     // messagetype cases must be matched first or they never reach their branch.
     match (message_type, resource_type) {
-        ("ThreadActivity/MemberConsumptionHorizonUpdate", _) => {
-            Some(TrouterEvent::ReadHorizon { chat_id })
-        }
+        ("ThreadActivity/MemberConsumptionHorizonUpdate", _) => Some(TrouterEvent::ReadHorizon {
+            chat_id,
+            from_mri: horizon_reader(resource),
+        }),
         ("Control/Typing", _) => {
             // The sender name is missing on some of these. The chat is the useful
             // part, so report the event either way.
@@ -573,6 +588,49 @@ fn parse_message(resource: &Value, chat_id: String) -> TrouterMessage {
         message_id: field("id"),
         message_type: field("messagetype"),
     }
+}
+
+/// Your unread state for one chat, from a conversation update.
+fn conversation_update(resource: &Value) -> Option<TrouterEvent> {
+    let chat_id = resource["id"].as_str()?.to_string();
+    let horizon = resource["properties"]["consumptionhorizon"].as_str()?;
+    let last = message_id(&resource["lastUpdatedMessageId"])?;
+    Some(TrouterEvent::Unread {
+        chat_id,
+        unread: read_upto(horizon) < last,
+    })
+}
+
+/// How far you have read, as a message id. The horizon is three
+/// semicolon-separated numbers whose order is not the same on every frame, and
+/// one of them is a client message id far outside the id range, so the marker
+/// is picked by range rather than by position. Teams numbers messages with the
+/// epoch millisecond they were composed, which is what makes this comparable.
+fn read_upto(horizon: &str) -> i64 {
+    horizon
+        .split(';')
+        .filter_map(|field| field.parse::<i64>().ok())
+        .filter(|n| (1_000_000_000_000..100_000_000_000_000).contains(n))
+        .max()
+        .unwrap_or(0)
+}
+
+/// A message id, which Teams sends as a number on some frames and a string on
+/// others.
+fn message_id(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
+}
+
+/// Who moved the read marker. `from` on these frames is the conversation, not
+/// a person, so the only name for the reader is the JSON in `content`.
+fn horizon_reader(resource: &Value) -> String {
+    let content = resource["content"].as_str().unwrap_or_default();
+    serde_json::from_str::<Value>(content)
+        .ok()
+        .and_then(|c| c["user"].as_str().map(str::to_string))
+        .unwrap_or_default()
 }
 
 /// Extract every availability change from a unifiedPresenceService envelope.
@@ -704,14 +762,108 @@ mod tests {
             json!({
                 "messagetype": "ThreadActivity/MemberConsumptionHorizonUpdate",
                 "conversationLink": LINK,
+                // `from` is the conversation on these, and the reader is named
+                // in the content, which Teams sends as JSON inside a string.
+                "from": "https://notifications.skype.net/v1/users/ME/contacts/19:abc123@thread.v2",
+                "content": r#"{"user":"8:orgid:11111111-2222-3333-4444-555555555555","consumptionhorizon":"1789374455236;1789374455465;2002503973215354838"}"#,
             }),
         );
         match one(&req) {
-            Some(TrouterEvent::ReadHorizon { chat_id }) => {
-                assert_eq!(chat_id, "19:abc123@thread.v2")
+            Some(TrouterEvent::ReadHorizon { chat_id, from_mri }) => {
+                assert_eq!(chat_id, "19:abc123@thread.v2");
+                assert_eq!(from_mri, "8:orgid:11111111-2222-3333-4444-555555555555");
             }
             other => panic!("expected ReadHorizon, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_read_horizon_naming_nobody_is_still_an_event() {
+        let req = messaging(
+            "NewMessage",
+            json!({
+                "messagetype": "ThreadActivity/MemberConsumptionHorizonUpdate",
+                "conversationLink": LINK,
+                "content": "not json",
+            }),
+        );
+        match one(&req) {
+            Some(TrouterEvent::ReadHorizon { chat_id, from_mri }) => {
+                assert_eq!(chat_id, "19:abc123@thread.v2");
+                assert!(from_mri.is_empty());
+            }
+            other => panic!("expected ReadHorizon, got {other:?}"),
+        }
+    }
+
+    /// The conversation update is the only frame that speaks for you: the
+    /// horizon in it is your own. Both shapes below are real ones, down to the
+    /// field order, which is not the same on the two.
+    #[test]
+    fn a_conversation_update_says_whether_you_have_read_the_chat() {
+        let unread = messaging(
+            "ConversationUpdate",
+            json!({
+                "id": "19:abc123@thread.v2",
+                "lastUpdatedMessageId": 1789374932330i64,
+                "properties": { "consumptionhorizon": "1789373049120;0;1789141737442" },
+            }),
+        );
+        match one(&unread) {
+            Some(TrouterEvent::Unread { chat_id, unread }) => {
+                assert_eq!(chat_id, "19:abc123@thread.v2");
+                assert!(unread);
+            }
+            other => panic!("expected Unread, got {other:?}"),
+        }
+
+        let read = messaging(
+            "ConversationUpdate",
+            json!({
+                "id": "19:abc123@thread.v2",
+                "lastUpdatedMessageId": 1789374932330i64,
+                "properties": { "consumptionhorizon": "1789374939080;0;1789374932330" },
+            }),
+        );
+        match one(&read) {
+            Some(TrouterEvent::Unread { unread, .. }) => assert!(!unread),
+            other => panic!("expected Unread, got {other:?}"),
+        }
+    }
+
+    /// A client message id is far outside the range a message id lives in, and
+    /// taking it for the marker would call every chat read.
+    #[test]
+    fn a_client_message_id_is_not_a_read_marker() {
+        let req = messaging(
+            "ConversationUpdate",
+            json!({
+                "id": "19:abc123@thread.v2",
+                "lastUpdatedMessageId": "1789374932330",
+                "properties": {
+                    "consumptionhorizon": "1789141737442;1789141737600;2002503973215354838"
+                },
+            }),
+        );
+        match one(&req) {
+            Some(TrouterEvent::Unread { unread, .. }) => assert!(unread),
+            other => panic!("expected Unread, got {other:?}"),
+        }
+    }
+
+    /// The first update on a chat you have never opened carries no horizon.
+    /// Guessing one would either raise a badge or clear one, both wrong.
+    #[test]
+    fn a_conversation_update_without_a_horizon_says_nothing() {
+        let req = messaging(
+            "ConversationUpdate",
+            json!({
+                "id": "19:abc123@thread.v2",
+                "lastUpdatedMessageId": 1789374932330i64,
+                "properties": { "lastimreceivedtime": "2026-09-14T08:27:35.236Z" },
+            }),
+        );
+        assert!(parse_event(&req).is_empty());
     }
 
     #[test]
