@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
 
     // Execute command
     match cli.command {
-        Commands::Auth(cmd) => cli::auth::execute(cmd, &config).await,
+        Commands::Auth(cmd) => cli::auth::execute(cmd, &config, cli.format).await,
         Commands::Chats(cmd) => cli::chats::execute(cmd, &config, cli.format).await,
         Commands::Teams(cmd) => cli::teams::execute(cmd, &config, cli.format).await,
         Commands::Emoji(cmd) => cli::emoji::execute(cmd, &config, cli.format).await,

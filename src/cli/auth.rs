@@ -1,14 +1,21 @@
+use std::io::Write;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use arboard::Clipboard;
 use clap::{Args, Subcommand};
+use serde_json::{json, Value};
 use tokio::time::sleep;
 
 use crate::api::{gen_device_code, gen_refresh_token_from_device_code, TeamsClient};
 use crate::config::Config;
 
 use super::output::{print_error, print_info, print_success, print_warning};
+use super::OutputFormat;
+
+/// How long the device code is polled for: 60 tries, 5 seconds apart.
+const POLL_EVERY: Duration = Duration::from_secs(5);
+const POLL_ATTEMPTS: u32 = 60;
 
 #[derive(Args, Debug)]
 pub struct AuthCommand {
@@ -43,13 +50,13 @@ pub enum AuthSubcommand {
     Refresh,
 }
 
-pub async fn execute(cmd: AuthCommand, config: &Config) -> Result<()> {
+pub async fn execute(cmd: AuthCommand, config: &Config, format: OutputFormat) -> Result<()> {
     match cmd.command {
         AuthSubcommand::Login {
             tenant,
             copy_code,
             no_browser,
-        } => login(config, tenant, copy_code, no_browser).await,
+        } => login(config, tenant, copy_code, no_browser, format).await,
         AuthSubcommand::Status => status(config).await,
         AuthSubcommand::Logout => logout(config).await,
         AuthSubcommand::Refresh => refresh(config).await,
@@ -61,8 +68,13 @@ async fn login(
     tenant: Option<String>,
     copy_code: bool,
     no_browser: bool,
+    format: OutputFormat,
 ) -> Result<()> {
     let tenant = tenant.as_ref().unwrap_or(&config.auth.tenant);
+
+    if matches!(format, OutputFormat::Json) {
+        return login_json(config, tenant).await;
+    }
 
     print_info(&format!("Generating device code for tenant: {}", tenant));
 
@@ -120,10 +132,9 @@ async fn login(
 
     // Poll for authorization
     let mut attempts = 0;
-    let max_attempts = 60; // 5 minutes with 5 second intervals
 
     loop {
-        sleep(Duration::from_secs(5)).await;
+        sleep(POLL_EVERY).await;
         attempts += 1;
 
         match gen_refresh_token_from_device_code(&device_code_info.device_code, tenant).await {
@@ -138,7 +149,7 @@ async fn login(
                 return Ok(());
             }
             Err(_) => {
-                if attempts >= max_attempts {
+                if attempts >= POLL_ATTEMPTS {
                     print_error("Authentication timed out. Please try again.");
                     return Ok(());
                 }
@@ -146,6 +157,51 @@ async fn login(
             }
         }
     }
+}
+
+/// The login a program drives: one JSON object per line, and nothing else.
+///
+/// No browser and no clipboard here. The caller owns the window the user is
+/// looking at, so it decides when the code is copied and the browser opens.
+async fn login_json(config: &Config, tenant: &str) -> Result<()> {
+    let info = gen_device_code(tenant).await?;
+    emit(&device_code_line(
+        &info.user_code,
+        &info.verification_url,
+        &info.expires_in,
+    ));
+
+    for _ in 0..POLL_ATTEMPTS {
+        sleep(POLL_EVERY).await;
+        // Every failure here is "not authorised yet" until the code expires,
+        // which the attempt count stands in for.
+        if let Ok(refresh_token) =
+            gen_refresh_token_from_device_code(&info.device_code, tenant).await
+        {
+            TeamsClient::new(config)?.store_refresh_token(refresh_token)?;
+            emit(&json!({ "event": "authenticated" }));
+            return Ok(());
+        }
+    }
+
+    Err(anyhow!("Authentication timed out. Please try again."))
+}
+
+fn device_code_line(user_code: &str, verification_url: &str, expires_in: &str) -> Value {
+    json!({
+        "event": "device_code",
+        "user_code": user_code,
+        "verification_url": verification_url,
+        // A string in the Microsoft response, seconds in ours.
+        "expires_in": expires_in.parse::<u64>().unwrap_or(900),
+    })
+}
+
+/// Flushed on every line: the reader is drawing a window from this, not
+/// reading a file at the end.
+fn emit(line: &Value) {
+    println!("{}", line);
+    let _ = std::io::stdout().flush();
 }
 
 async fn status(config: &Config) -> Result<()> {
@@ -205,4 +261,26 @@ async fn refresh(config: &Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::device_code_line;
+
+    #[test]
+    fn the_device_code_line_carries_what_a_window_needs() {
+        let line = device_code_line("ABCD1234", "https://microsoft.com/devicelogin", "900");
+        assert_eq!(line["event"], "device_code");
+        assert_eq!(line["user_code"], "ABCD1234");
+        assert_eq!(
+            line["verification_url"],
+            "https://microsoft.com/devicelogin"
+        );
+        assert_eq!(line["expires_in"], 900);
+    }
+
+    #[test]
+    fn an_unreadable_lifetime_falls_back_to_fifteen_minutes() {
+        assert_eq!(device_code_line("A", "https://x", "")["expires_in"], 900);
+    }
 }
