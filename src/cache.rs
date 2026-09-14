@@ -102,3 +102,5 @@ pub const USERS_FILE: &str = "users.json";
 pub const UNKNOWN_USERS_FILE: &str = "users-unknown.json";
 pub const ME_FILE: &str = "me.json";
 pub const REGION_FILE: &str = "region.json";
+/// The people the push watch subscribes to presence for.
+pub const PRESENCE_USERS_FILE: &str = "presence-users.json";

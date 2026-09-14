@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::api::{SessionEnd, TeamsClient, TrouterEvent, TrouterMessage};
+use crate::cache::{Cache, PRESENCE_USERS_FILE};
 use crate::cli::utils::{strip_html, truncate};
 use crate::config::Config;
 use crate::types::UserDetails;
@@ -326,10 +327,14 @@ async fn watch_push(client: &TeamsClient, cmd: &WatchCommand) -> Result<()> {
     }
 
     // Presence only arrives for users we asked for, so nothing is subscribed
-    // unless the stream carries presence.
-    if cmd.json && wants(&cmd.events, WatchEvent::Presence) {
-        subscribe_presence(client, my_mri.as_deref()).await;
-    }
+    // unless the stream carries presence. Alongside the socket rather than
+    // before it: resolving the list costs a chat-list fetch, and waiting on
+    // that held every other event back by five seconds.
+    let presence = async {
+        if cmd.json && wants(&cmd.events, WatchEvent::Presence) {
+            subscribe_presence(client, my_mri.as_deref()).await;
+        }
+    };
 
     // Message ids already delivered this session. See the dedup step below.
     let mut seen: HashSet<String> = HashSet::new();
@@ -348,105 +353,110 @@ async fn watch_push(client: &TeamsClient, cmd: &WatchCommand) -> Result<()> {
 
     let debug = std::env::var("SQUADS_TROUTER_DEBUG").is_ok();
     let mut backoff = BACKOFF_MIN;
-    loop {
-        let res = client
-            .trouter_listen(|ev: TrouterEvent| {
-                let kind = event_kind(&ev);
-                // Each skip says why, so an event that never printed can be told
-                // apart from one that never arrived.
-                let skip = |reason: &str| {
-                    if debug {
-                        eprintln!("[watch] skipped {kind:?}: {reason}");
-                    }
-                };
-                // The terminal output is messages only; --events widens the json stream.
-                let wanted = if cmd.json {
-                    wants(&cmd.events, kind)
-                } else {
-                    kind == WatchEvent::Message
-                };
-                if !wanted {
-                    skip("not selected");
-                    return;
-                }
-                if let TrouterEvent::NewMessage(m) | TrouterEvent::MessageUpdate(m) = &ev {
-                    if skips_own(my_mri.as_deref(), &m.from_mri, cmd.include_self) {
-                        skip("own message");
+    let listen = async {
+        loop {
+            let res = client
+                .trouter_listen(|ev: TrouterEvent| {
+                    let kind = event_kind(&ev);
+                    // Each skip says why, so an event that never printed can be told
+                    // apart from one that never arrived.
+                    let skip = |reason: &str| {
+                        if debug {
+                            eprintln!("[watch] skipped {kind:?}: {reason}");
+                        }
+                    };
+                    // The terminal output is messages only; --events widens the json stream.
+                    let wanted = if cmd.json {
+                        wants(&cmd.events, kind)
+                    } else {
+                        kind == WatchEvent::Message
+                    };
+                    if !wanted {
+                        skip("not selected");
                         return;
                     }
-                }
-                // optional chat filter, on the events that belong to a chat
-                if let Some(chat_id) = event_chat_id(&ev) {
-                    if !cmd.chat.is_empty() && !cmd.chat.iter().any(|c| c == chat_id) {
-                        skip("chat filtered out");
-                        return;
+                    if let TrouterEvent::NewMessage(m) | TrouterEvent::MessageUpdate(m) = &ev {
+                        if skips_own(my_mri.as_deref(), &m.from_mri, cmd.include_self) {
+                            skip("own message");
+                            return;
+                        }
                     }
-                }
-                // Dedup and the empty-content check are for new messages only. An edit
-                // reuses the message id, so deduping updates would swallow every edit.
-                if let TrouterEvent::NewMessage(m) = &ev {
-                    // Trouter redelivers un-acked events and replays recent messages.
-                    if !m.message_id.is_empty() && !seen.insert(m.message_id.clone()) {
-                        skip("already delivered");
-                        return;
+                    // optional chat filter, on the events that belong to a chat
+                    if let Some(chat_id) = event_chat_id(&ev) {
+                        if !cmd.chat.is_empty() && !cmd.chat.iter().any(|c| c == chat_id) {
+                            skip("chat filtered out");
+                            return;
+                        }
                     }
-                    if seen.len() > 10_000 {
-                        seen.clear();
-                    }
-                    if strip_html(&m.content).trim().is_empty() {
-                        skip("empty after html strip");
-                        return;
-                    }
-                }
-
-                if cmd.json {
-                    let line = event_line(&ev, &chrono::Utc::now().to_rfc3339());
-                    println!("{}", serde_json::to_string(&line).unwrap_or_default());
-                    let _ = std::io::stdout().flush();
-                } else if !cmd.quiet {
+                    // Dedup and the empty-content check are for new messages only. An edit
+                    // reuses the message id, so deduping updates would swallow every edit.
                     if let TrouterEvent::NewMessage(m) = &ev {
-                        let time = chrono::Local::now().format("%H:%M:%S").to_string();
-                        println!(
-                            "{} 💬 {} {}",
-                            format!("[{}]", time).dimmed(),
-                            format!("{}:", m.from).cyan().bold(),
-                            truncate(&strip_html(&m.content), 80)
-                        );
+                        // Trouter redelivers un-acked events and replays recent messages.
+                        if !m.message_id.is_empty() && !seen.insert(m.message_id.clone()) {
+                            skip("already delivered");
+                            return;
+                        }
+                        if seen.len() > 10_000 {
+                            seen.clear();
+                        }
+                        if strip_html(&m.content).trim().is_empty() {
+                            skip("empty after html strip");
+                            return;
+                        }
+                    }
+
+                    if cmd.json {
+                        let line = event_line(&ev, &chrono::Utc::now().to_rfc3339());
+                        println!("{}", serde_json::to_string(&line).unwrap_or_default());
+                        let _ = std::io::stdout().flush();
+                    } else if !cmd.quiet {
+                        if let TrouterEvent::NewMessage(m) = &ev {
+                            let time = chrono::Local::now().format("%H:%M:%S").to_string();
+                            println!(
+                                "{} 💬 {} {}",
+                                format!("[{}]", time).dimmed(),
+                                format!("{}:", m.from).cyan().bold(),
+                                truncate(&strip_html(&m.content), 80)
+                            );
+                        }
+                    }
+
+                    if cmd.notify {
+                        if let TrouterEvent::NewMessage(m) = &ev {
+                            send_notification(
+                                &format!("Teams: {}", m.from),
+                                &truncate(&strip_html(&m.content), 100),
+                                "teams",
+                            );
+                        }
+                    }
+                })
+                .await;
+
+            let end = match res {
+                Ok(end) => PushEnd::Session(end),
+                Err(e) => {
+                    eprintln!("push connection error: {e}");
+                    if is_transport_error(&e) {
+                        PushEnd::Transport
+                    } else {
+                        PushEnd::Failed
                     }
                 }
-
-                if cmd.notify {
-                    if let TrouterEvent::NewMessage(m) = &ev {
-                        send_notification(
-                            &format!("Teams: {}", m.from),
-                            &truncate(&strip_html(&m.content), 100),
-                            "teams",
-                        );
-                    }
-                }
-            })
-            .await;
-
-        let end = match res {
-            Ok(end) => PushEnd::Session(end),
-            Err(e) => {
-                eprintln!("push connection error: {e}");
-                if is_transport_error(&e) {
-                    PushEnd::Transport
-                } else {
-                    PushEnd::Failed
-                }
+            };
+            let (wait, next) = next_backoff(backoff, end);
+            backoff = next;
+            if debug {
+                eprintln!("[watch] push session ended ({end:?}), reconnecting in {wait}s");
             }
-        };
-        let (wait, next) = next_backoff(backoff, end);
-        backoff = next;
-        if debug {
-            eprintln!("[watch] push session ended ({end:?}), reconnecting in {wait}s");
+            if wait > 0 {
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+            }
         }
-        if wait > 0 {
-            tokio::time::sleep(Duration::from_secs(wait)).await;
-        }
-    }
+    };
+
+    tokio::join!(presence, listen);
+    Ok(())
 }
 
 /// How many users one presence subscription covers. Teams sends a frame per
@@ -455,7 +465,17 @@ const PRESENCE_MAX_USERS: usize = 100;
 
 /// Subscribe to the presence of the people we chat with. The client re-sends
 /// the list after every reconnect, so this runs once.
+///
+/// The list last run used goes out first: resolving a fresh one costs a
+/// chat-list fetch of several seconds, and the people you chat with are much
+/// the same from one run to the next. The fresh list follows and replaces it,
+/// which is what picks up anyone new.
 async fn subscribe_presence(client: &TeamsClient, my_mri: Option<&str>) {
+    let remembered = remembered_presence_users();
+    if !remembered.is_empty() {
+        client.subscribe_presence(remembered.clone()).await;
+    }
+
     let details = match client.get_user_details().await {
         Ok(details) => details,
         Err(e) => {
@@ -468,7 +488,28 @@ async fn subscribe_presence(client: &TeamsClient, my_mri: Option<&str>) {
         eprintln!("note: no one to subscribe to, presence will stay silent");
         return;
     }
+    remember_presence_users(&users);
+    // Teams replies to a subscription with everyone's state, so re-sending an
+    // unchanged list is a burst of frames saying nothing new.
+    if users == remembered {
+        return;
+    }
     client.subscribe_presence(users).await;
+}
+
+/// Who the last run subscribed to. Empty on a first run, and on any failure to
+/// read: this only ever saves a wait.
+fn remembered_presence_users() -> Vec<String> {
+    Cache::new()
+        .ok()
+        .and_then(|c| c.load(PRESENCE_USERS_FILE).ok().flatten())
+        .unwrap_or_default()
+}
+
+fn remember_presence_users(users: &[String]) {
+    if let Ok(cache) = Cache::new() {
+        let _ = cache.save(PRESENCE_USERS_FILE, &users.to_vec());
+    }
 }
 
 /// Users to watch, one-on-one partners first: those are the ones a client shows
