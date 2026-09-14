@@ -7,7 +7,7 @@ use clap::{Args, Subcommand, ValueEnum};
 use serde::Serialize;
 use tabled::Tabled;
 
-use crate::api::{TeamsClient, BOT_MRI_PREFIX, DEFAULT_PAGE_SIZE};
+use crate::api::{read_upto, TeamsClient, BOT_MRI_PREFIX, DEFAULT_PAGE_SIZE};
 use crate::config::Config;
 use crate::names::{chat_title, resolve_member_names};
 use crate::types::Chat;
@@ -70,6 +70,12 @@ pub enum ChatsSubcommand {
         /// Message to read up to. The newest one is looked up when not given.
         #[arg(short, long)]
         message_id: Option<String>,
+    },
+
+    /// Show how far each member has read
+    Receipts {
+        /// Chat ID
+        chat_id: String,
     },
 
     /// Send a message to a chat
@@ -380,6 +386,7 @@ pub async fn execute(cmd: ChatsCommand, config: &Config, format: OutputFormat) -
             chat_id,
             message_id,
         } => read(config, &chat_id, message_id, format).await,
+        ChatsSubcommand::Receipts { chat_id } => receipts(config, &chat_id, format).await,
         ChatsSubcommand::Send {
             chat_id_or_message,
             message,
@@ -747,6 +754,37 @@ async fn messages(
 struct ReadJson {
     chat_id: String,
     message_id: Option<String>,
+}
+
+/// One member's read marker, as the json stream and the table both show it.
+#[derive(Debug, Serialize, Tabled)]
+struct ReceiptRow {
+    #[tabled(rename = "Member")]
+    mri: String,
+    /// The newest message they have read, as a message id. "0" when Teams has
+    /// no marker for them, which is a member who has never opened the chat.
+    #[tabled(rename = "Read up to")]
+    read_upto: String,
+}
+
+/// How far each member has read. One request, and the only way to know whether
+/// a message you sent has been seen: the push socket reports a marker only when
+/// somebody moves it.
+async fn receipts(config: &Config, chat_id: &str, format: OutputFormat) -> Result<()> {
+    let client = TeamsClient::new(config)?;
+    let horizons = client.get_consumption_horizons(chat_id).await?;
+
+    let rows: Vec<ReceiptRow> = horizons
+        .consumptionhorizons
+        .into_iter()
+        .map(|h| ReceiptRow {
+            mri: h.id,
+            read_upto: read_upto(&h.consumptionhorizon).to_string(),
+        })
+        .collect();
+
+    print_output(&rows, format);
+    Ok(())
 }
 
 async fn read(

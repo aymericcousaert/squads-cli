@@ -35,7 +35,8 @@ Search across both Mail and Calendar simultaneously.
 - **Reply**: `squads-cli chats reply <chat-id> --message-id <msg-id> "<content>"`
   - Support for `--markdown`.
 - **React**: `squads-cli chats react <chat-id> --message-id <msg-id> <reaction>` (Supports all Teams emojis by name like `unicornhead`, `meltingface`, or characters like `🦄`, and your tenant's own emotes by their key). Use `--remove` to take one back.
-- **View Reactions**: `squads-cli chats reactions <chat-id> --message-id <msg-id>` (see who reacted to a message). With `--format json` each row carries the raw `reaction` key, the `label` to draw, and an `object_id` on a custom emote only. No reactions prints `[]`.
+- **View Reactions**: `squads-cli chats reactions <chat-id> --message-id <msg-id>` (see who reacted to a message)
+- **Read Receipts**: `squads-cli chats receipts <chat-id>` (how far each member has read, as a message id). With `--format json` each row carries the raw `reaction` key, the `label` to draw, and an `object_id` on a custom emote only. No reactions prints `[]`.
 - **View Mentions**: `squads-cli chats mentions` (find messages where you are @mentioned)
 - **List Files**: `squads-cli chats files <chat-id>` (list files shared in a chat)
 - **Download File**: `squads-cli chats download-file <chat-id> <file-id> --output ./file.pdf`

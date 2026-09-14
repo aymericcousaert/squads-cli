@@ -84,6 +84,9 @@ squads-cli chats read <chat-id>
 # Read up to a message you already have, which saves the lookup
 squads-cli chats read <chat-id> --message-id <msg-id>
 
+# How far each member has read, as a message id
+squads-cli chats receipts <chat-id>
+
 # Send a message
 squads-cli chats send <chat-id> "Hello, World!"
 
@@ -123,6 +126,14 @@ raw `reaction`, the `label` to draw, and an `object_id` on a custom emote only.
 derives `unread` from. Opening a chat in a client of your own changes nothing
 until you call it. Without `--message-id` it looks the newest message up first,
 so it costs one extra fetch.
+
+`chats receipts` is how you tell whether a message you sent has been read. It
+gives every member's read marker as a message id, so a message is read when its
+own id is the smaller. Nothing else carries another member's marker: the chat
+list has yours alone, and the push socket reports one only when somebody moves
+it, which says nothing about what happened before you connected. The `read`
+event on `watch --json` carries the same marker as `read_upto`, for the moves
+that happen while you are watching.
 
 `chats messages` returns human messages only, so existing scripts see no change.
 `--types` adds the other kinds to the `--format json` output:
@@ -168,7 +179,8 @@ squads-cli watch --json --include-self
 | `message` | a new chat message | `chat_id`, `message_id`, `from`, `from_mri`, `content` |
 | `message_update` | an edit, or a reaction landing on a message | same as `message` |
 | `typing` | someone is typing | `chat_id`, `from` (usually empty) |
-| `read` | someone moved their read marker | `chat_id` |
+| `read` | someone moved their read marker | `chat_id`, `from_mri`, `read_upto` |
+| `unread` | your own read state for a chat changed | `chat_id`, `unread` |
 | `message_loss` | events were dropped, so resync | none |
 | `presence` | a user's availability changed | `user_id`, `availability` |
 

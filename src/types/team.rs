@@ -101,3 +101,22 @@ pub struct Conversation {
     pub id: String,
     pub latest_delivery_time: String,
 }
+
+/// Everyone's read marker in one chat, from `GET /threads/{id}/consumptionhorizons`.
+///
+/// The only source for whether someone else has read a message. The chat list
+/// carries your own marker and nobody else's, and the thread's own member list
+/// carries neither.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConsumptionHorizons {
+    #[serde(default)]
+    pub consumptionhorizons: Vec<MemberHorizon>,
+}
+
+/// One member's read marker. The horizon itself is three semicolon-separated
+/// numbers; `read_upto` in the trouter module is what reads it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemberHorizon {
+    pub id: String,
+    pub consumptionhorizon: String,
+}

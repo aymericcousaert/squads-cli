@@ -600,11 +600,19 @@ fn event_line(ev: &TrouterEvent, time: &str) -> serde_json::Value {
             "time": time,
             "source": "push",
         }),
-        TrouterEvent::ReadHorizon { chat_id, from_mri } => serde_json::json!({
+        TrouterEvent::ReadHorizon {
+            chat_id,
+            from_mri,
+            read_upto,
+        } => serde_json::json!({
             "event": "read",
             "chat_id": chat_id,
             // Who read it. Empty when Teams sent a horizon naming nobody.
             "from_mri": from_mri,
+            // How far they have read, as a message id, so a message you sent
+            // can tell whether it is behind their marker. A string, like every
+            // other message id on this stream.
+            "read_upto": read_upto.to_string(),
             "time": time,
             "source": "push",
         }),
@@ -820,13 +828,14 @@ mod tests {
     }
 
     #[test]
-    fn a_read_marker_carries_the_chat_and_who_read_it() {
+    fn a_read_marker_carries_the_chat_who_read_it_and_how_far() {
         assert_eq!(
             line(&TrouterEvent::ReadHorizon {
                 chat_id: "19:abc@thread.v2".to_string(),
                 from_mri: "8:orgid:u1".to_string(),
+                read_upto: 1789374455465,
             }),
-            r#"{"chat_id":"19:abc@thread.v2","event":"read","from_mri":"8:orgid:u1","source":"push","time":"2030-01-01T10:00:00+00:00"}"#
+            r#"{"chat_id":"19:abc@thread.v2","event":"read","from_mri":"8:orgid:u1","read_upto":"1789374455465","source":"push","time":"2030-01-01T10:00:00+00:00"}"#
         );
     }
 
@@ -859,6 +868,7 @@ mod tests {
             event_chat_id(&TrouterEvent::ReadHorizon {
                 chat_id: "19:abc@thread.v2".to_string(),
                 from_mri: String::new(),
+                read_upto: 0,
             }),
             Some("19:abc@thread.v2")
         );

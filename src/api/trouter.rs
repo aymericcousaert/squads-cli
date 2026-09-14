@@ -79,7 +79,13 @@ pub enum TrouterEvent {
     MessageUpdate(TrouterMessage),
     /// Someone moved their read marker in a chat. `from_mri` is who did it,
     /// which is what tells your own read on another device from a colleague's.
-    ReadHorizon { chat_id: String, from_mri: String },
+    ReadHorizon {
+        chat_id: String,
+        from_mri: String,
+        /// How far they have read, as a message id. Zero when the frame named
+        /// no horizon, which means "they read something" and nothing more.
+        read_upto: i64,
+    },
     /// Someone is typing in a chat.
     Typing { chat_id: String, from: String },
     /// A user's availability changed.
@@ -539,10 +545,14 @@ fn parse_messaging(req: &Value, url: &str) -> Option<TrouterEvent> {
     // Teams also labels control messages as resourceType "NewMessage", so the
     // messagetype cases must be matched first or they never reach their branch.
     match (message_type, resource_type) {
-        ("ThreadActivity/MemberConsumptionHorizonUpdate", _) => Some(TrouterEvent::ReadHorizon {
-            chat_id,
-            from_mri: horizon_reader(resource),
-        }),
+        ("ThreadActivity/MemberConsumptionHorizonUpdate", _) => {
+            let (from_mri, read_upto) = horizon_reader(resource);
+            Some(TrouterEvent::ReadHorizon {
+                chat_id,
+                from_mri,
+                read_upto,
+            })
+        }
         ("Control/Typing", _) => {
             // The sender name is missing on some of these. The chat is the useful
             // part, so report the event either way.
@@ -606,7 +616,7 @@ fn conversation_update(resource: &Value) -> Option<TrouterEvent> {
 /// one of them is a client message id far outside the id range, so the marker
 /// is picked by range rather than by position. Teams numbers messages with the
 /// epoch millisecond they were composed, which is what makes this comparable.
-fn read_upto(horizon: &str) -> i64 {
+pub fn read_upto(horizon: &str) -> i64 {
     horizon
         .split(';')
         .filter_map(|field| field.parse::<i64>().ok())
@@ -623,14 +633,20 @@ fn message_id(value: &Value) -> Option<i64> {
         .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
 }
 
-/// Who moved the read marker. `from` on these frames is the conversation, not
-/// a person, so the only name for the reader is the JSON in `content`.
-fn horizon_reader(resource: &Value) -> String {
+/// Who moved the read marker, and how far. `from` on these frames is the
+/// conversation, not a person, so the only name for the reader is the JSON in
+/// `content` — and their new horizon is in there with it.
+fn horizon_reader(resource: &Value) -> (String, i64) {
     let content = resource["content"].as_str().unwrap_or_default();
-    serde_json::from_str::<Value>(content)
-        .ok()
-        .and_then(|c| c["user"].as_str().map(str::to_string))
-        .unwrap_or_default()
+    let Ok(parsed) = serde_json::from_str::<Value>(content) else {
+        return (String::new(), 0);
+    };
+    let user = parsed["user"].as_str().unwrap_or_default().to_string();
+    let upto = parsed["consumptionhorizon"]
+        .as_str()
+        .map(read_upto)
+        .unwrap_or(0);
+    (user, upto)
 }
 
 /// Extract every availability change from a unifiedPresenceService envelope.
@@ -769,9 +785,16 @@ mod tests {
             }),
         );
         match one(&req) {
-            Some(TrouterEvent::ReadHorizon { chat_id, from_mri }) => {
+            Some(TrouterEvent::ReadHorizon {
+                chat_id,
+                from_mri,
+                read_upto,
+            }) => {
                 assert_eq!(chat_id, "19:abc123@thread.v2");
                 assert_eq!(from_mri, "8:orgid:11111111-2222-3333-4444-555555555555");
+                // The larger of the two in-range fields: the moment they read,
+                // which is at or past the message that made them.
+                assert_eq!(read_upto, 1789374455465);
             }
             other => panic!("expected ReadHorizon, got {other:?}"),
         }
@@ -788,9 +811,14 @@ mod tests {
             }),
         );
         match one(&req) {
-            Some(TrouterEvent::ReadHorizon { chat_id, from_mri }) => {
+            Some(TrouterEvent::ReadHorizon {
+                chat_id,
+                from_mri,
+                read_upto,
+            }) => {
                 assert_eq!(chat_id, "19:abc123@thread.v2");
                 assert!(from_mri.is_empty());
+                assert_eq!(read_upto, 0);
             }
             other => panic!("expected ReadHorizon, got {other:?}"),
         }

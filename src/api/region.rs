@@ -68,6 +68,12 @@ impl Region {
         )
     }
 
+    /// The same service without the `/users/ME` prefix. A thread's own
+    /// endpoints hang off the service root, not off your user.
+    pub fn chatsvc_thread_base(&self) -> String {
+        format!("https://teams.microsoft.com/api/chatsvc/{}/v1", self.0)
+    }
+
     /// Same service on the host the web client uses for reactions. Only that
     /// one call accepts it, so it is kept apart from `chatsvc_base`.
     pub fn chatsvc_cloud_base(&self) -> String {

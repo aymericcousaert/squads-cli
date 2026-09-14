@@ -668,6 +668,34 @@ impl TeamsClient {
         Ok(Some((content_type, bytes)))
     }
 
+    /// Everyone's read marker in a chat, so a message you sent can say whether
+    /// it has been read.
+    ///
+    /// Its own request: no list endpoint carries another member's marker, and
+    /// the push socket only reports one when somebody moves it, which says
+    /// nothing about what happened before the window opened.
+    pub async fn get_consumption_horizons(&self, chat_id: &str) -> Result<ConsumptionHorizons> {
+        let token = self.get_token(SCOPE_IC3).await?;
+        let url = format!(
+            "{}/threads/{}/consumptionhorizons",
+            self.regional().await.chatsvc_thread_base(),
+            urlencoding::encode(chat_id)
+        );
+
+        let res = self
+            .http
+            .get(&url)
+            .header("authorization", format!("Bearer {}", token.value))
+            .send()
+            .await?;
+
+        let status = res.status();
+        if !status.is_success() {
+            return Err(anyhow!("Failed to get read receipts: {status}"));
+        }
+        Ok(res.json().await?)
+    }
+
     /// Move the chat's read watermark to now, which is what clears its unread
     /// state in Teams. `isRead` is derived from this server side, so without it
     /// a chat stays unread everywhere no matter how often you open it.
