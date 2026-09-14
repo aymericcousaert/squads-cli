@@ -22,6 +22,13 @@ fn get_epoch_s() -> u64 {
         .as_secs()
 }
 
+/// Whether a failed renewal means the refresh token itself is finished, so
+/// that only a new login can help. `invalid_grant` is the OAuth answer for it;
+/// AADSTS70043 is the sign-in frequency check that expires one early.
+fn is_dead_refresh_token(complaint: &str) -> bool {
+    complaint.contains("invalid_grant") || complaint.contains("AADSTS70043")
+}
+
 /// Simple HTML stripper for quoted messages
 fn strip_html_simple(s: &str) -> String {
     let mut result = String::new();
@@ -214,7 +221,19 @@ impl TeamsClient {
 
         let refresh_token = match refresh_token {
             Some(token) if token.expires < get_epoch_s() => {
-                let new_token = renew_refresh_token(&token, &self.tenant).await?;
+                let new_token = match renew_refresh_token(&token, &self.tenant).await {
+                    Ok(token) => token,
+                    // The token is dead, not the request: a sign-in frequency
+                    // check, a revoked session, or ninety days of silence.
+                    // Keeping it would fail the same way on every command.
+                    Err(e) if is_dead_refresh_token(&e.to_string()) => {
+                        self.clear_tokens()?;
+                        return Err(anyhow!(
+                            "Not authenticated. Run 'squads-cli auth login' first."
+                        ));
+                    }
+                    Err(e) => return Err(e),
+                };
                 {
                     let mut tokens = self.tokens.write().unwrap();
                     tokens.insert("refresh_token".to_string(), new_token.clone());
@@ -3568,5 +3587,25 @@ mod picture_host_tests {
     fn people_and_groups_sit_on_different_graph_paths() {
         assert_eq!(PhotoSubject::Person.path(), "users");
         assert_eq!(PhotoSubject::Group.path(), "groups");
+    }
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::is_dead_refresh_token;
+
+    #[test]
+    fn an_expired_refresh_token_only_a_login_can_fix() {
+        assert!(is_dead_refresh_token(
+            r#"Failed to renew refresh token: 400 Bad Request - {"error":"invalid_grant","error_description":"AADSTS70043: The refresh token has expired"}"#
+        ));
+    }
+
+    #[test]
+    fn a_request_that_failed_for_another_reason_keeps_the_token() {
+        assert!(!is_dead_refresh_token(
+            "Failed to renew refresh token: 503 Service Unavailable - "
+        ));
+        assert!(!is_dead_refresh_token("error sending request: timed out"));
     }
 }
