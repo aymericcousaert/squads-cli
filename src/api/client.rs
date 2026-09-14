@@ -50,6 +50,46 @@ fn strip_html_simple(s: &str) -> String {
         .to_string()
 }
 
+/// The blockquote Teams puts at the top of a reply.
+///
+/// Every attribute matters: without `itemtype` it is a plain quote, and without
+/// the two `itemid`s the client cannot jump to the message being answered.
+fn reply_quote(message_id: &str, from_mri: &str, author: &str, content: &str) -> String {
+    let preview = strip_html_simple(content);
+    let preview = if preview.chars().count() > REPLY_PREVIEW_CHARS {
+        let cut: String = preview.chars().take(REPLY_PREVIEW_CHARS).collect();
+        format!("{}...", cut.trim_end())
+    } else {
+        preview
+    };
+    format!(
+        concat!(
+            r#"<blockquote itemscope itemtype="http://schema.skype.com/Reply" itemid="{id}">"#,
+            r#"<strong itemprop="mri" itemid="{mri}">{author}</strong>"#,
+            r#"<span itemprop="time" itemid="{id}"></span>"#,
+            r#"<p itemprop="preview">{preview}</p></blockquote>"#,
+        ),
+        id = escape_attribute(message_id),
+        mri = escape_attribute(from_mri),
+        author = escape_text(author),
+        preview = escape_text(&preview),
+    )
+}
+
+/// How much of the answered message the quote repeats. Teams shows a line, not
+/// the message again.
+const REPLY_PREVIEW_CHARS: usize = 200;
+
+fn escape_text(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn escape_attribute(s: &str) -> String {
+    escape_text(s).replace('"', "&quot;")
+}
+
 /// Microsoft Teams API client
 pub struct TeamsClient {
     tokens: Arc<RwLock<TokenStore>>,
@@ -1633,88 +1673,37 @@ impl TeamsClient {
     /// Send a reply in a thread
     /// Note: Graph API replies don't work for 1:1 chats, so we fall back to
     /// sending a regular message with quoted content
+    /// Reply to a chat message, quoting it the way Teams does.
+    ///
+    /// A reply is an ordinary message whose HTML opens with a
+    /// `schema.skype.com/Reply` blockquote naming the message it answers.
+    /// There is no reply endpoint for a chat: Graph has one for a channel
+    /// (`teams reply`), and pointing it at a chat answers 404.
     pub async fn reply_to_message(
         &self,
         chat_id: &str,
         reply_to_id: &str,
         content: &str,
     ) -> Result<()> {
-        // First try Graph API (works for channel/group chats)
-        let token = self.get_token(SCOPE_GRAPH).await?;
-        let url = format!(
-            "https://graph.microsoft.com/v1.0/chats/{}/messages/{}/replies",
-            chat_id, reply_to_id
+        let conversations = self.get_conversations(chat_id, None).await?;
+        let original = conversations
+            .messages
+            .iter()
+            .find(|m| m.id.as_deref() == Some(reply_to_id))
+            .ok_or_else(|| anyhow!("Message {reply_to_id} is not in the last page of this chat"))?;
+
+        let body = format!(
+            "{}{}",
+            reply_quote(
+                reply_to_id,
+                original.from.as_deref().unwrap_or_default(),
+                original.im_display_name.as_deref().unwrap_or("Someone"),
+                original.content.as_deref().unwrap_or_default(),
+            ),
+            content
         );
-
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            HeaderName::from_static("authorization"),
-            HeaderValue::from_str(&format!("Bearer {}", token.value))?,
-        );
-        headers.insert(
-            HeaderName::from_static("content-type"),
-            HeaderValue::from_static("application/json"),
-        );
-
-        let body = serde_json::json!({
-            "body": {
-                "content": content
-            }
-        });
-
-        let res = self
-            .http
-            .post(&url)
-            .headers(headers)
-            .body(serde_json::to_string(&body)?)
-            .send()
-            .await?;
-
-        if res.status().is_success() || res.status().as_u16() == 201 {
-            return Ok(());
-        }
-
-        // If 405 Method Not Allowed, fall back to regular message with quote
-        // This happens for 1:1 (Direct) chats where Graph API replies aren't supported
-        if res.status().as_u16() == 405 {
-            // Get the original message to quote
-            let conversations = self.get_conversations(chat_id, None).await?;
-            let original_msg = conversations
-                .messages
-                .iter()
-                .find(|m| m.id.as_deref() == Some(reply_to_id));
-
-            let quoted_content = if let Some(msg) = original_msg {
-                let sender = msg
-                    .im_display_name
-                    .clone()
-                    .unwrap_or_else(|| "Someone".to_string());
-                let original_content = msg
-                    .content
-                    .clone()
-                    .map(|c| strip_html_simple(&c))
-                    .unwrap_or_default();
-                let truncated = if original_content.len() > 100 {
-                    format!("{}...", &original_content[..100])
-                } else {
-                    original_content
-                };
-                format!(
-                    "<blockquote><b>{}</b>: {}</blockquote><p>{}</p>",
-                    sender, truncated, content
-                )
-            } else {
-                format!("<p>{}</p>", content)
-            };
-
-            // Send as regular message using Teams Chat Service API
-            self.send_message(chat_id, &quoted_content, None).await?;
-            return Ok(());
-        }
-
-        let status = res.status();
-        let body = res.text().await?;
-        Err(anyhow!("Failed to reply to message: {} - {}", status, body))
+        self.send_message(chat_id, &body, None).await?;
+        Ok(())
     }
 
     /// Send a reaction to a chat message
@@ -3635,5 +3624,59 @@ mod token_tests {
             "Failed to renew refresh token: 503 Service Unavailable - "
         ));
         assert!(!is_dead_refresh_token("error sending request: timed out"));
+    }
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+
+    /// The shape a real Teams reply carries, attribute for attribute. Taken
+    /// from a message the web client sent; ids and names are invented.
+    #[test]
+    fn reply_quote_matches_what_teams_sends() {
+        assert_eq!(
+            reply_quote(
+                "1789025289038",
+                "8:orgid:11111111-1111-4111-8111-111111111111",
+                "Ada Fenwick",
+                "<p>ah bon wtf</p>",
+            ),
+            concat!(
+                r#"<blockquote itemscope itemtype="http://schema.skype.com/Reply" "#,
+                r#"itemid="1789025289038">"#,
+                r#"<strong itemprop="mri" itemid="8:orgid:11111111-1111-4111-8111-111111111111">"#,
+                r#"Ada Fenwick</strong>"#,
+                r#"<span itemprop="time" itemid="1789025289038"></span>"#,
+                r#"<p itemprop="preview">ah bon wtf</p></blockquote>"#,
+            )
+        );
+    }
+
+    /// The quote is one line. A whole message repeated in it would be read
+    /// twice.
+    #[test]
+    fn a_long_message_is_cut_in_the_quote() {
+        let long = "widget ".repeat(80);
+        let quote = reply_quote("1", "8:orgid:u1", "Ada", &format!("<p>{long}</p>"));
+        let preview = quote
+            .split(r#"<p itemprop="preview">"#)
+            .nth(1)
+            .unwrap()
+            .trim_end_matches("</p></blockquote>");
+
+        assert!(preview.ends_with("..."));
+        assert!(preview.chars().count() <= REPLY_PREVIEW_CHARS + 3);
+    }
+
+    /// A name or a message with a bracket in it must not close the tag it
+    /// sits in.
+    #[test]
+    fn markup_in_a_name_or_message_is_escaped() {
+        let quote = reply_quote("1", r#"8:orgid:"u1"#, "<script>", "<p>a &amp; b &lt; c</p>");
+
+        assert!(quote.contains("&lt;script&gt;"));
+        assert!(quote.contains(r#"itemid="8:orgid:&quot;u1""#));
+        assert!(!quote.contains("<script>"));
     }
 }
