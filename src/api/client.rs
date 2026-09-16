@@ -57,8 +57,8 @@ fn strip_html_simple(s: &str) -> String {
 fn reply_quote(message_id: &str, from_mri: &str, author: &str, content: &str) -> String {
     let preview = strip_html_simple(content);
     let preview = if preview.chars().count() > REPLY_PREVIEW_CHARS {
-        let cut: String = preview.chars().take(REPLY_PREVIEW_CHARS).collect();
-        format!("{}...", cut.trim_end())
+        let cut: String = preview.chars().take(REPLY_PREVIEW_CHARS - 1).collect();
+        format!("{cut}\u{2026}")
     } else {
         preview
     };
@@ -78,6 +78,9 @@ fn reply_quote(message_id: &str, from_mri: &str, author: &str, content: &str) ->
 
 /// How much of the answered message the quote repeats. Teams shows a line, not
 /// the message again.
+///
+/// The ellipsis is one of them: Teams keeps 199 characters and a single `…`,
+/// never 200 and three dots. Measured against replies its own clients sent.
 const REPLY_PREVIEW_CHARS: usize = 200;
 
 fn escape_text(s: &str) -> String {
@@ -3665,8 +3668,10 @@ mod reply_tests {
             .unwrap()
             .trim_end_matches("</p></blockquote>");
 
-        assert!(preview.ends_with("..."));
-        assert!(preview.chars().count() <= REPLY_PREVIEW_CHARS + 3);
+        // Exactly what Teams writes: one ellipsis, and 200 characters counting it.
+        assert!(preview.ends_with('\u{2026}'));
+        assert!(!preview.ends_with("..."));
+        assert_eq!(preview.chars().count(), REPLY_PREVIEW_CHARS);
     }
 
     /// A name or a message with a bracket in it must not close the tag it
