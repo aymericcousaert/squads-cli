@@ -306,6 +306,15 @@ squads-cli users list --search "John"
 # Show current user
 squads-cli users me
 
+# Your own availability, and anyone else's
+squads-cli users presence
+squads-cli users presence --user alice@example.com
+
+# Say what you are, the way the Teams menu does
+squads-cli users presence --set available
+squads-cli users presence --set dnd
+squads-cli users presence --set reset     # back to what Teams works out
+
 # Download someone's profile photo
 squads-cli users photo <user-id> --output avatar.jpg
 squads-cli users photo alice@example.com --output avatar.jpg
@@ -316,6 +325,17 @@ squads-cli users photo <group-id> --group --output team.jpg
 # Straight to stdout
 squads-cli users photo <user-id> -o - | open -f -a Preview
 ```
+
+`--set` takes available, busy, dnd, brb, away and reset. The state sticks until
+something replaces it, so it outlives the command.
+
+Two limits, both the service's:
+
+- **Offline is not a state you can ask for.** The service reads it as a reset,
+  so `--set offline` is refused rather than quietly making you available
+- **Nothing here reports activity.** The endpoint activity report the Teams web
+  client uses answers 404 for this token, and the endpoint list it belongs to
+  answers 410 Gone, so `--set` is the only way to move your own dot
 
 Most people never set a photo. `users photo` says so on stderr and exits **3**,
 which is not the **1** a real failure exits with, so a caller can remember

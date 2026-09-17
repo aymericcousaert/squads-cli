@@ -34,7 +34,7 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-use super::{TeamsClient, SCOPE_IC3, SCOPE_PRESENCE};
+use super::{TeamsClient, CLIENT_VERSION, SCOPE_IC3, SCOPE_PRESENCE};
 
 /// Client descriptor the service expects in the connect query.
 const TROUTER_TC: &str = r#"{"cv":"2026.07.01.1","ua":"TeamsCDL","hr":"","v":"0.1.0"}"#;
@@ -52,9 +52,6 @@ const REGISTRATION_TTL: u64 = 3600;
 /// Re-register twice per lifetime. A lapsed registration stops events while the
 /// socket stays up, so the session would look healthy and deliver nothing.
 const REGISTER_REFRESH: Duration = Duration::from_secs(REGISTRATION_TTL / 2);
-
-/// Web client build the services expect to see.
-const CLIENT_VERSION: &str = "1415/26022704215";
 
 /// Path the presence service pushes to, under the session `surl`.
 const PRESENCE_PATH: &str = "unifiedPresenceService";

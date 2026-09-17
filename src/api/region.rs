@@ -91,12 +91,24 @@ impl Region {
         )
     }
 
+    /// Unified presence service, which both reads and reports availability.
+    pub fn ups_base(&self) -> String {
+        format!("https://teams.cloud.microsoft/ups/{}/v1", self.0)
+    }
+
     /// Presence pubsub subscription for a Trouter endpoint.
     pub fn ups_subscription_url(&self, endpoint_id: &str) -> String {
-        format!(
-            "https://teams.cloud.microsoft/ups/{}/v1/pubsub/subscriptions/{}",
-            self.0, endpoint_id
-        )
+        format!("{}/pubsub/subscriptions/{}", self.ups_base(), endpoint_id)
+    }
+
+    /// The state you picked yourself, which outranks anything a client reports.
+    pub fn ups_force_availability_url(&self) -> String {
+        format!("{}/me/forceavailability", self.ups_base())
+    }
+
+    /// Presence of a set of people, the only way to read it with this token.
+    pub fn ups_getpresence_url(&self) -> String {
+        format!("{}/presence/getpresence/", self.ups_base())
     }
 
     /// Animated custom emoji image.

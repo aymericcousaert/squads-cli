@@ -1,12 +1,13 @@
 use std::io::Write;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::{Args, Subcommand};
 use serde::Serialize;
 use tabled::Tabled;
 
-use crate::api::{photo_object_id, PhotoSubject, TeamsClient};
+use crate::api::{photo_object_id, Availability, PhotoSubject, TeamsClient};
 use crate::config::Config;
+use crate::types::{GraphPresence, Presence};
 
 use super::output::{print_error, print_output, print_single, print_success};
 use super::OutputFormat;
@@ -76,6 +77,11 @@ pub enum UsersSubcommand {
         /// Multiple user emails or IDs, comma-separated
         #[arg(long)]
         users: Option<String>,
+
+        /// Set your own state instead of reading one: available, busy, dnd,
+        /// brb, away, or reset to let Teams decide it again
+        #[arg(long, value_name = "STATE")]
+        set: Option<String>,
     },
 }
 
@@ -112,7 +118,9 @@ pub async fn execute(cmd: UsersCommand, config: &Config, format: OutputFormat) -
         UsersSubcommand::Photo { id, group, output } => {
             photo(config, &id, group, output, format).await
         }
-        UsersSubcommand::Presence { user, users } => presence(config, user, users, format).await,
+        UsersSubcommand::Presence { user, users, set } => {
+            presence(config, user, users, set, format).await
+        }
     }
 }
 
@@ -198,9 +206,14 @@ async fn presence(
     config: &Config,
     user: Option<String>,
     users: Option<String>,
+    set: Option<String>,
     format: OutputFormat,
 ) -> Result<()> {
     let client = TeamsClient::new(config)?;
+
+    if let Some(state) = set {
+        return set_presence(&client, &state, format).await;
+    }
 
     if let Some(user_ids_str) = users {
         // Multiple users - resolve emails to IDs first
@@ -229,11 +242,9 @@ async fn presence(
             return Ok(());
         }
 
-        let id_refs: Vec<&str> = resolved_ids.iter().map(|s| s.as_str()).collect();
-        let presences = client.get_presence(id_refs).await?;
+        let presences = presences_of(&client, &resolved_ids).await?;
 
         let rows: Vec<PresenceRow> = presences
-            .value
             .into_iter()
             .map(|p| PresenceRow {
                 id: p.id.unwrap_or_default(),
@@ -265,8 +276,8 @@ async fn presence(
         };
 
         if let Some(id) = resolved_id {
-            let presences = client.get_presence(vec![&id]).await?;
-            if let Some(p) = presences.value.into_iter().next() {
+            let presences = presences_of(&client, std::slice::from_ref(&id)).await?;
+            if let Some(p) = presences.into_iter().next() {
                 match format {
                     OutputFormat::Json => {
                         print_single(&p, format);
@@ -292,8 +303,15 @@ async fn presence(
             print_error(&format!("User not found: {}", user_id_for_error));
         }
     } else {
-        // Current user's presence
-        let p = client.get_my_presence().await?;
+        // Current user's presence. Graph refuses it for this token on some
+        // tenants, and the presence service answers the same question.
+        let p = match client.get_my_presence().await {
+            Ok(p) => p,
+            Err(graph_error) => match my_presence_from_ups(&client).await {
+                Ok(p) => p,
+                Err(_) => return Err(graph_error),
+            },
+        };
 
         match format {
             OutputFormat::Json => {
@@ -315,6 +333,84 @@ async fn presence(
         }
     }
 
+    Ok(())
+}
+
+/// Presence of the people named, from Graph or, where Graph refuses this
+/// token, from the presence service. Graph's own error is what surfaces if
+/// both fail: it is the one naming the account's own limits.
+async fn presences_of(client: &TeamsClient, ids: &[String]) -> Result<Vec<GraphPresence>> {
+    let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    match client.get_presence(refs).await {
+        Ok(answer) => Ok(answer.value),
+        Err(graph_error) => match client.get_ups_presences(ids).await {
+            Ok(answer) => Ok(answer.presence.into_iter().map(as_graph).collect()),
+            Err(_) => Err(graph_error),
+        },
+    }
+}
+
+/// Our own presence, the same way round.
+async fn my_presence_from_ups(client: &TeamsClient) -> Result<GraphPresence> {
+    let me = client.get_me().await?;
+    client
+        .get_ups_presences(std::slice::from_ref(&me.id))
+        .await?
+        .presence
+        .into_iter()
+        .next()
+        .map(as_graph)
+        .ok_or_else(|| anyhow!("presence service returned nobody"))
+}
+
+/// A presence-service answer in the shape the command prints. It carries no
+/// status message, which is a Graph field.
+fn as_graph(found: Presence) -> GraphPresence {
+    GraphPresence {
+        id: Some(found.mri.rsplit(':').next().unwrap_or_default().to_string()),
+        availability: found.presence.availability,
+        activity: found.presence.activity,
+        status_message: None,
+    }
+}
+
+/// What `--set` did, for a caller reading JSON.
+#[derive(Debug, Serialize)]
+struct PresenceSetJson {
+    availability: Option<String>,
+    /// True when the state went back to being the clients' business.
+    reset: bool,
+}
+
+/// State our own availability, or hand it back to the service.
+async fn set_presence(client: &TeamsClient, state: &str, format: OutputFormat) -> Result<()> {
+    // Worth its own answer: the service takes Offline as a reset, so doing as
+    // asked would leave someone who wanted to hide looking available.
+    if state.eq_ignore_ascii_case("offline") {
+        print_error("Teams does not take Offline from a client. Try away, or reset");
+        return Ok(());
+    }
+
+    let Some(availability) = Availability::parse(state) else {
+        print_error(&format!(
+            "Unknown state: {state}. Try available, busy, dnd, brb, away or reset"
+        ));
+        return Ok(());
+    };
+    client.set_availability(availability).await?;
+
+    let reset = availability == Availability::Reset;
+    match format {
+        OutputFormat::Json => print_single(
+            &PresenceSetJson {
+                availability: (!reset).then(|| availability.wire().to_string()),
+                reset,
+            },
+            format,
+        ),
+        _ if reset => print_success("Status reset, Teams decides it again"),
+        _ => print_success(&format!("Status set to {}", availability.wire())),
+    }
     Ok(())
 }
 

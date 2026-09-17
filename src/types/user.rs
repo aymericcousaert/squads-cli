@@ -72,7 +72,7 @@ pub struct UserProperties {
 
 /// User presence information
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Presence {
     pub mri: String,
     pub etag: String,
@@ -82,7 +82,7 @@ pub struct Presence {
 
 /// Presence details
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct PresenceInfo {
     pub source_network: Option<String>,
     pub availability: Option<String>,

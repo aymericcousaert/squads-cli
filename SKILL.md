@@ -65,6 +65,7 @@ Search across both Mail and Calendar simultaneously.
 - **Check Presence**: `squads-cli users presence` (your own presence)
 - **Check User Presence**: `squads-cli users presence --user "<email>"` (specific user)
 - **Check Multiple Users**: `squads-cli users presence --users "email1,email2"` (multiple users)
+- **Set Your Own State**: `squads-cli users presence --set <available|busy|dnd|brb|away|reset>`. It sticks until something replaces it. `offline` is refused: the service reads it as a reset
 
 ### 6. Emoji and Custom Emotes
 - **List Emoji**: `squads-cli emoji list` (every built-in Teams emoji: key, character, name, in Teams' own order; `--search <text>`, `--limit <n>`). Answers from a cache.
