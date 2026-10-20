@@ -1016,11 +1016,30 @@ async fn resolve_user_to_chat(client: &TeamsClient, query: &str) -> Result<Desti
     })
 }
 
-/// Find the existing 1:1 chat with a user, or create one.
+/// Whether this chat is the 1:1 chat between you and `user_id`.
 ///
-/// A chat only matches when the single other member is that user. Matching on
-/// "the user is a member" alone would match every 1:1 chat when the target is
-/// yourself, and send to whichever chat the API listed first.
+/// Apps added to the chat are `28:` members and do not count. The single other
+/// person must be that user: "the user is a member" alone would match every
+/// 1:1 chat when the target is yourself.
+fn is_one_on_one_with(chat: &Chat, user_id: &str, my_user_id: &str) -> bool {
+    let people: Vec<_> = chat
+        .members
+        .iter()
+        .filter(|m| !m.mri.starts_with(BOT_MRI_PREFIX))
+        .collect();
+    if people.len() != 2 {
+        return false;
+    }
+    let others: Vec<&str> = people
+        .iter()
+        .filter_map(|m| m.object_id.as_deref())
+        .filter(|id| !id.eq_ignore_ascii_case(my_user_id))
+        .collect();
+
+    others.len() == 1 && others[0].eq_ignore_ascii_case(user_id)
+}
+
+/// Find the existing 1:1 chat with a user, or create one.
 async fn find_one_on_one_chat(
     client: &TeamsClient,
     user_id: &str,
@@ -1028,20 +1047,12 @@ async fn find_one_on_one_chat(
 ) -> Result<String> {
     let details = client.get_user_details().await?;
 
-    for chat in &details.chats {
-        if chat.members.len() != 2 {
-            continue;
-        }
-        let others: Vec<&str> = chat
-            .members
-            .iter()
-            .filter_map(|m| m.object_id.as_deref())
-            .filter(|id| !id.eq_ignore_ascii_case(my_user_id))
-            .collect();
-
-        if others.len() == 1 && others[0].eq_ignore_ascii_case(user_id) {
-            return Ok(chat.id.clone());
-        }
+    if let Some(chat) = details
+        .chats
+        .iter()
+        .find(|chat| is_one_on_one_with(chat, user_id, my_user_id))
+    {
+        return Ok(chat.id.clone());
     }
 
     // No existing chat found, create a new one
@@ -1581,6 +1592,40 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Commands};
     use clap::Parser;
+
+    fn chat_with(members: &[(&str, &str)]) -> Chat {
+        serde_json::from_value(serde_json::json!({
+            "id": "19:a_b@unq.gbl.spaces",
+            "members": members
+                .iter()
+                .map(|(mri, id)| serde_json::json!({"mri": mri, "objectId": id}))
+                .collect::<Vec<_>>(),
+        }))
+        .unwrap()
+    }
+
+    /// An app added to a 1:1 chat made `--to` miss it and try to create one.
+    #[test]
+    fn a_one_on_one_chat_still_matches_with_apps_in_it() {
+        let chat = chat_with(&[
+            ("8:orgid:me", "me"),
+            ("8:orgid:her", "her"),
+            ("28:app-1", "app-1"),
+            ("28:app-2", "app-2"),
+        ]);
+        assert!(is_one_on_one_with(&chat, "her", "me"));
+        assert!(!is_one_on_one_with(&chat, "app-1", "me"));
+    }
+
+    #[test]
+    fn a_group_chat_is_not_a_one_on_one_chat() {
+        let chat = chat_with(&[
+            ("8:orgid:me", "me"),
+            ("8:orgid:her", "her"),
+            ("8:orgid:him", "him"),
+        ]);
+        assert!(!is_one_on_one_with(&chat, "her", "me"));
+    }
 
     /// Scripts read this output and assume every row is someone talking.
     #[test]
