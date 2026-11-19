@@ -57,6 +57,7 @@ pub enum TeamsSubcommand {
         channel_id: String,
 
         /// Message content
+        #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
         message: Option<String>,
 
         /// Message subject (optional)
@@ -68,8 +69,12 @@ pub enum TeamsSubcommand {
         stdin: bool,
 
         /// Treat message as Markdown and convert to HTML
-        #[arg(short, long)]
+        #[arg(short, long, conflicts_with = "html")]
         markdown: bool,
+
+        /// Send raw HTML without escaping
+        #[arg(long)]
+        html: bool,
     },
 
     /// Reply to a message in a team channel
@@ -85,10 +90,15 @@ pub enum TeamsSubcommand {
         message_id: String,
 
         /// Reply content
-        content: String,
+        #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
+        content: Option<String>,
+
+        /// Read reply from stdin
+        #[arg(long)]
+        stdin: bool,
 
         /// Treat content as Markdown and convert to HTML
-        #[arg(short, long)]
+        #[arg(short, long, conflicts_with = "html")]
         markdown: bool,
 
         /// Send raw HTML without escaping
@@ -236,6 +246,7 @@ pub async fn execute(cmd: TeamsCommand, config: &Config, format: OutputFormat) -
             subject,
             stdin,
             markdown,
+            html,
         } => {
             post(
                 config,
@@ -245,6 +256,7 @@ pub async fn execute(cmd: TeamsCommand, config: &Config, format: OutputFormat) -
                 subject,
                 stdin,
                 markdown,
+                html,
             )
             .await
         }
@@ -253,6 +265,7 @@ pub async fn execute(cmd: TeamsCommand, config: &Config, format: OutputFormat) -
             channel_id,
             message_id,
             content,
+            stdin,
             markdown,
             html,
         } => {
@@ -261,7 +274,8 @@ pub async fn execute(cmd: TeamsCommand, config: &Config, format: OutputFormat) -
                 &team_id,
                 &channel_id,
                 &message_id,
-                &content,
+                content,
+                stdin,
                 markdown,
                 html,
             )
@@ -428,6 +442,7 @@ async fn messages(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn post(
     config: &Config,
     team_id: &str,
@@ -436,6 +451,7 @@ async fn post(
     subject: Option<String>,
     stdin: bool,
     markdown: bool,
+    html: bool,
 ) -> Result<()> {
     let content = if let Some(msg) = message {
         msg
@@ -455,7 +471,9 @@ async fn post(
 
     let client = TeamsClient::new(config)?;
 
-    let html_body = if markdown {
+    let html_body = if html {
+        content
+    } else if markdown {
         markdown_to_html(&content)
     } else {
         format!("<p>{}</p>", html_escape(&content))
@@ -474,15 +492,28 @@ async fn post(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn reply(
     config: &Config,
     team_id: &str,
     channel_id: &str,
     message_id: &str,
-    content: &str,
+    content: Option<String>,
+    stdin: bool,
     markdown: bool,
     html: bool,
 ) -> Result<()> {
+    let content = if let Some(c) = content {
+        c
+    } else if stdin {
+        let mut buffer = String::new();
+        io::stdin().read_to_string(&mut buffer)?;
+        buffer.trim().to_string()
+    } else {
+        print_error("No reply provided. Use --stdin or provide reply as argument.");
+        return Ok(());
+    };
+
     if content.is_empty() {
         print_error("Reply content cannot be empty");
         return Ok(());
@@ -491,11 +522,11 @@ async fn reply(
     let client = TeamsClient::new(config)?;
 
     let html_body = if html {
-        content.to_string()
+        content
     } else if markdown {
-        markdown_to_html(content)
+        markdown_to_html(&content)
     } else {
-        format!("<p>{}</p>", html_escape(content))
+        format!("<p>{}</p>", html_escape(&content))
     };
 
     let result = client

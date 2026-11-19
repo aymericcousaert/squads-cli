@@ -80,6 +80,34 @@ fn test_teams_help() {
         .stdout(predicate::str::contains("Teams operations"));
 }
 
+/// Test teams reply needs content or --stdin, but not both
+#[test]
+fn test_teams_reply_content_rules() {
+    let base = ["teams", "reply", "t", "c", "--message-id", "m"];
+    let mut cmd = Command::cargo_bin("squads-cli").unwrap();
+    cmd.args(base).assert().code(2);
+    let mut cmd = Command::cargo_bin("squads-cli").unwrap();
+    cmd.args(base).args(["hi", "--stdin"]).assert().code(2);
+    let mut cmd = Command::cargo_bin("squads-cli").unwrap();
+    cmd.args(base)
+        .args(["hi", "--html", "--markdown"])
+        .assert()
+        .code(2);
+}
+
+/// Test teams post needs content or --stdin, and --html conflicts with --markdown
+#[test]
+fn test_teams_post_content_rules() {
+    let base = ["teams", "post", "t", "c"];
+    let mut cmd = Command::cargo_bin("squads-cli").unwrap();
+    cmd.args(base).assert().code(2);
+    let mut cmd = Command::cargo_bin("squads-cli").unwrap();
+    cmd.args(base)
+        .args(["hi", "--html", "--markdown"])
+        .assert()
+        .code(2);
+}
+
 /// Test sheets subcommand help
 #[test]
 fn test_sheets_help() {

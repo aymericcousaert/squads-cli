@@ -78,9 +78,9 @@ Search across both Mail and Calendar simultaneously.
 - **List Channels**: `squads-cli teams channels <team-id>`
 - **View Messages**: `squads-cli teams messages <team-id> <channel-id>` (includes reactions column)
 - **Post to Channel**: `squads-cli teams post <team-id> <channel-id> "<message>"`
-  - Support for `--subject`, `--markdown`, and `--stdin`.
+  - Support for `--subject`, `--markdown`, `--html` (raw HTML), and `--stdin`.
 - **Reply in Channel**: `squads-cli teams reply <team-id> <channel-id> --message-id <id> "<reply>"`
-  - Support for `--markdown` and `--html`.
+  - Support for `--markdown`, `--html`, and `--stdin`.
 - **React in Channel**: `squads-cli teams react <team-id> <channel-id> --message-id <id> <reaction>`
   - Reactions: like, heart, laugh, surprised, sad, angry, skull, hourglass
   - Use `--remove` to remove a reaction
