@@ -106,6 +106,11 @@ impl Region {
         format!("{}/me/forceavailability", self.ups_base())
     }
 
+    /// Your clients as the service counts them when it works out your availability.
+    pub fn ups_endpoints_url(&self) -> String {
+        format!("{}/me/endpoints/", self.ups_base())
+    }
+
     /// Presence of a set of people, the only way to read it with this token.
     pub fn ups_getpresence_url(&self) -> String {
         format!("{}/presence/getpresence/", self.ups_base())

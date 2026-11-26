@@ -47,6 +47,11 @@ pub struct WatchCommand {
     /// Also stream what you sent yourself, from this or any other device.
     #[arg(long)]
     pub include_self: bool,
+
+    /// Count this watch as one of your Teams clients, so colleagues see you
+    /// available while it runs. Implies --push.
+    #[arg(long)]
+    pub report_activity: bool,
 }
 
 /// An event kind the --json stream can carry.
@@ -93,7 +98,10 @@ pub async fn execute(cmd: WatchCommand, config: &Config) -> Result<()> {
     let client = TeamsClient::new(config)?;
 
     // --json is a push-only output mode; imply push so it never silently no-ops.
-    if cmd.push || cmd.json {
+    if cmd.push || cmd.json || cmd.report_activity {
+        if cmd.report_activity {
+            client.report_activity();
+        }
         return watch_push(&client, &cmd).await;
     }
 
@@ -455,8 +463,50 @@ async fn watch_push(client: &TeamsClient, cmd: &WatchCommand) -> Result<()> {
         }
     };
 
-    tokio::join!(presence, listen);
+    let run = async {
+        tokio::join!(presence, listen);
+    };
+    if !cmd.report_activity {
+        run.await;
+        return Ok(());
+    }
+    tokio::select! {
+        _ = run => {}
+        _ = shutdown_signal() => {
+            // Capped: a quit that hangs on the network is worse than a dot
+            // that lingers for a few minutes.
+            let gone = tokio::time::timeout(Duration::from_secs(3), client.delete_presence_endpoint());
+            match gone.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => eprintln!("presence endpoint not removed: {e}"),
+                Err(_) => eprintln!("presence endpoint not removed: timed out"),
+            }
+        }
+    }
     Ok(())
+}
+
+/// Ctrl+C in a terminal, or SIGTERM from a parent app quitting.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// How many users one presence subscription covers. Teams sends a frame per

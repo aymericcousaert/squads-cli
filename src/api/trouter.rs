@@ -171,6 +171,7 @@ impl TeamsClient {
         heartbeat.tick().await; // consume the immediate first tick
         let mut connected = false;
         let mut clean = false;
+        let mut activity_seq: u32 = 0;
 
         let mut refresh = tokio::time::interval(REGISTER_REFRESH);
         refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -193,6 +194,10 @@ impl TeamsClient {
                                 Err(e) => tracing::warn!("registrar refresh failed: {e}"),
                             },
                             Err(e) => tracing::warn!("registrar refresh got no token: {e}"),
+                        }
+                        // Said once, being active would rest on a five-hour-old report.
+                        if let Some(frame) = self.presence_activity(&mut activity_seq).await {
+                            if write.send(WsMessage::Text(frame.into())).await.is_err() { break; }
                         }
                     }
                 }
@@ -247,6 +252,9 @@ impl TeamsClient {
                                 self.set_trouter_surl(Some(path.to_string()));
                                 // The old endpoint took its subscription with it.
                                 self.send_presence_subscription().await;
+                                if let Some(frame) = self.presence_activity(&mut activity_seq).await {
+                                    let _ = write.send(WsMessage::Text(frame.into())).await;
+                                }
                                 refresh.reset();
                             }
                             None => tracing::warn!("trouter.connected carried no surl"),
@@ -294,6 +302,23 @@ impl TeamsClient {
         }
         self.set_trouter_surl(None);
         Ok(session_end(connected, clean))
+    }
+
+    /// Declare the socket one of your clients, and return the frame saying you
+    /// are active. Nothing when the watch does not report activity.
+    async fn presence_activity(&self, seq: &mut u32) -> Option<String> {
+        if !self.reports_activity() {
+            return None;
+        }
+        if let Err(e) = self.create_presence_endpoint().await {
+            tracing::warn!("presence endpoint failed: {e}");
+            return None;
+        }
+        let frame = user_activity_frame(seq);
+        if std::env::var("SQUADS_TROUTER_DEBUG").is_ok() {
+            eprintln!("[trouter] -> {frame}");
+        }
+        Some(frame)
     }
 
     /// Register our trouter endpoint with the Teams registrar so message notifications
@@ -405,6 +430,16 @@ fn presence_subscription_body(trouter_uri: &str, user_ids: &[String]) -> Value {
         "subscriptionsToAdd": add,
         "subscriptionsToRemove": [],
     })
+}
+
+/// The `user.activity` event saying you are active. The `+` asks the service
+/// to ack it; `cv` is a correlation vector, a random base and a counter.
+fn user_activity_frame(seq: &mut u32) -> String {
+    *seq += 1;
+    let cv = B64.encode(uuid::Uuid::new_v4().as_bytes());
+    let cv = format!("{}.{}", cv.trim_end_matches('='), seq);
+    let event = json!({"name": "user.activity", "args": [{"state": "active", "cv": cv}]});
+    format!("5:{seq}+::{event}")
 }
 
 /// Build the Trouter connect query. `ccid` is sent empty, as the web client does
@@ -1106,6 +1141,21 @@ mod tests {
         assert_eq!(frame_data("3:::{\"id\":7}"), "{\"id\":7}");
         assert_eq!(frame_data("2::"), "");
         assert_eq!(frame_data("1"), "");
+    }
+
+    #[test]
+    fn the_activity_frame_asks_for_an_ack_and_counts_up() {
+        let mut seq = 0;
+        let first = user_activity_frame(&mut seq);
+        let second = user_activity_frame(&mut seq);
+        assert!(first.starts_with("5:1+::"));
+        assert!(second.starts_with("5:2+::"));
+
+        let event: Value = serde_json::from_str(frame_data(&first)).unwrap();
+        assert_eq!(event["name"], "user.activity");
+        assert_eq!(event["args"][0]["state"], "active");
+        let cv = event["args"][0]["cv"].as_str().unwrap();
+        assert!(cv.ends_with(".1") && !cv.contains('='));
     }
 
     #[test]

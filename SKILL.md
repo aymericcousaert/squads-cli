@@ -104,6 +104,7 @@ Stream Teams events as they happen, one JSON object per line.
 - **Widen the Stream**: `squads-cli watch --json --events all` (or a comma list: `--events message,typing,read`)
 - **One Chat Only**: `squads-cli watch --json --chat <chat-id>`
 - **See Your Own Messages**: `squads-cli watch --json --include-self` (for a chat client: what you send from another device lands on the stream too)
+- **Appear Online While Watching**: `squads-cli watch --json --report-activity` (the watch counts as one of your Teams clients, so colleagues see you available until it stops)
 
 Every line carries `event`, `time` and `source`. Only `message` is sent unless you ask for more.
 

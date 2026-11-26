@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -116,6 +117,8 @@ pub struct TeamsClient {
     /// Users we want presence for. A subscription dies with the endpoint, so the
     /// list is kept and re-sent on every reconnect.
     presence_users: Arc<RwLock<Vec<String>>>,
+    /// Whether the socket counts as one of your clients. See `report_activity`.
+    reports_activity: Arc<AtomicBool>,
     /// Tenant GUID, read out of a token on first ask.
     tenant_id: Arc<RwLock<Option<String>>>,
 }
@@ -217,6 +220,7 @@ impl TeamsClient {
             trouter_reconnect_url: Arc::new(RwLock::new(None)),
             trouter_surl: Arc::new(RwLock::new(None)),
             presence_users: Arc::new(RwLock::new(Vec::new())),
+            reports_activity: Arc::new(AtomicBool::new(false)),
             tenant_id: Arc::new(RwLock::new(None)),
         })
     }
@@ -380,6 +384,16 @@ impl TeamsClient {
 
     pub(crate) fn set_presence_users(&self, users: Vec<String>) {
         *self.presence_users.write().unwrap() = users;
+    }
+
+    /// Make every Trouter session declare itself one of your clients, so the
+    /// service counts it when it works out your availability.
+    pub fn report_activity(&self) {
+        self.reports_activity.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn reports_activity(&self) -> bool {
+        self.reports_activity.load(Ordering::Relaxed)
     }
 
     /// The one place a region is learned. Takes any text holding Teams URLs:

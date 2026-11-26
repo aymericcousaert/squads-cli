@@ -1,10 +1,10 @@
 //! Picking your own availability, and reading anyone's.
 //!
 //! Teams works out an availability from the clients reporting for you, and a
-//! client can also state one outright — what the menu in Teams does. Only the
-//! outright statement is open to us: the endpoint activity report the web
-//! client uses answers 404 for this token, and the endpoint list it belongs to
-//! answers 410 Gone.
+//! client can also state one outright — what the menu in Teams does. A stated
+//! one only shows while at least one client is connected: with none, you are
+//! Offline whatever you stated. `watch --report-activity` makes the push
+//! socket one of those clients.
 //!
 //! Graph refuses presence for this token as well, so the presence service is
 //! the only way to read one, including your own.
@@ -74,7 +74,8 @@ impl TeamsClient {
     /// State ourselves as `availability`, the way the menu in Teams does.
     ///
     /// It outlives the process: the service holds the state until something
-    /// replaces it, so this is a statement about you, not about this run.
+    /// replaces it, so this is a statement about you, not about this run. It
+    /// only shows while one of your clients is connected.
     pub async fn set_availability(&self, availability: Availability) -> Result<()> {
         let url = self.regional().await.ups_force_availability_url();
         let body = json!({"availability": availability.wire()});
@@ -85,6 +86,43 @@ impl TeamsClient {
             .send()
             .await?;
         ups_result(res, "availability").await.map(|_| ())
+    }
+
+    /// Declare our push socket as one of your clients, so the service counts
+    /// it when it works out your availability. The socket then reports whether
+    /// you are active with a `user.activity` event, as the web client does.
+    pub async fn create_presence_endpoint(&self) -> Result<()> {
+        let url = self.regional().await.ups_endpoints_url();
+        let body = json!({
+            "id": self.trouter_epid(),
+            "availability": "Available",
+            "activity": "Available",
+            "activityReporting": "Transport",
+            "deviceType": "Web",
+        });
+        let token = self.get_token(SCOPE_PRESENCE).await?;
+        let res = self
+            .ups_request(self.http.put(&url), &token.value)
+            .body(body.to_string())
+            .send()
+            .await?;
+        ups_result(res, "endpoint").await.map(|_| ())
+    }
+
+    /// Take the socket off your clients. The service otherwise keeps it for
+    /// minutes after the socket closes, and you look available all that time.
+    pub async fn delete_presence_endpoint(&self) -> Result<()> {
+        let url = format!(
+            "{}{}",
+            self.regional().await.ups_endpoints_url(),
+            self.trouter_epid()
+        );
+        let token = self.get_token(SCOPE_PRESENCE).await?;
+        let res = self
+            .ups_request(self.http.delete(&url), &token.value)
+            .send()
+            .await?;
+        ups_result(res, "endpoint").await.map(|_| ())
     }
 
     /// Presence of the people named, ourselves included.

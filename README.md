@@ -197,6 +197,10 @@ thread, and moves that chat to the top of the list. A notifier wants the default
 your own traffic is noise. The flag covers `message` and `message_update` on both the
 push and the polling path, so your own edits arrive too.
 
+`--report-activity` is for a chat client too. It registers the socket as one of your Teams
+clients and tells the service you are active, the way the web client does, so colleagues
+see you available for as long as the watch runs and Offline once it stops.
+
 ### Personal Notes
 
 Shortcut to your personal "Notes" chat.
@@ -333,9 +337,9 @@ Two limits, both the service's:
 
 - **Offline is not a state you can ask for.** The service reads it as a reset,
   so `--set offline` is refused rather than quietly making you available
-- **Nothing here reports activity.** The endpoint activity report the Teams web
-  client uses answers 404 for this token, and the endpoint list it belongs to
-  answers 410 Gone, so `--set` is the only way to move your own dot
+- **A state only shows while a client is connected.** With no Teams client
+  open, colleagues see you Offline whatever `--set` said. `watch --report-activity`
+  makes the watch one of your clients, so you show as available while it runs
 
 Most people never set a photo. `users photo` says so on stderr and exits **3**,
 which is not the **1** a real failure exits with, so a caller can remember
