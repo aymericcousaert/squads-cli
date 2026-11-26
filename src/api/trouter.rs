@@ -64,6 +64,9 @@ pub struct TrouterMessage {
     pub from: String,
     pub content: String,
     pub message_id: String,
+    /// The sender's own id for the message. A client that retries a send can
+    /// leave two copies on the server under this one id, and Teams shows one.
+    pub client_message_id: String,
     pub message_type: String,
 }
 
@@ -276,7 +279,7 @@ impl TeamsClient {
                             for ev in parse_event(&req) {
                                 if debug {
                                     match &ev {
-                                        TrouterEvent::NewMessage(m) | TrouterEvent::MessageUpdate(m) => eprintln!("[trouter] msg from={} chat={} : {}", m.from, m.chat_id, m.content.chars().take(80).collect::<String>()),
+                                        TrouterEvent::NewMessage(m) | TrouterEvent::MessageUpdate(m) => eprintln!("[trouter] msg from={} chat={} client_id={} : {}", m.from, m.chat_id, m.client_message_id, m.content.chars().take(80).collect::<String>()),
                                         other => eprintln!("[trouter] {other:?}"),
                                     }
                                 }
@@ -628,6 +631,7 @@ fn parse_message(resource: &Value, chat_id: String) -> TrouterMessage {
         from: field("imdisplayname"),
         content: field("content"),
         message_id: field("id"),
+        client_message_id: field("clientmessageid"),
         message_type: field("messagetype"),
     }
 }

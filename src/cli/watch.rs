@@ -404,6 +404,11 @@ async fn watch_push(client: &TeamsClient, cmd: &WatchCommand) -> Result<()> {
                             skip("already delivered");
                             return;
                         }
+                        let key = format!("{}#{}", m.chat_id, m.client_message_id);
+                        if !m.client_message_id.is_empty() && !seen.insert(key) {
+                            skip("repeat of a message already delivered");
+                            return;
+                        }
                         if seen.len() > 10_000 {
                             seen.clear();
                         }
@@ -803,6 +808,7 @@ mod tests {
             from: "Ada Fenwick".to_string(),
             content: "<p>hello <b>you</b></p>".to_string(),
             message_id: "1700000000000".to_string(),
+            client_message_id: String::new(),
             message_type: "RichText/Html".to_string(),
         }
     }
@@ -819,6 +825,7 @@ mod tests {
             from: "Ada Fenwick".into(),
             content: "<p>hi</p>".into(),
             message_id: "1893537901424".into(),
+            client_message_id: String::new(),
             message_type: "RichText/Html".into(),
         };
         let line = message_line("message", &m, "2030-01-02T11:40:43+00:00");
@@ -833,6 +840,7 @@ mod tests {
             from: "Ada Fenwick".into(),
             content: "hi".into(),
             message_id: "not-a-number".into(),
+            client_message_id: String::new(),
             message_type: "Text".into(),
         };
         let line = message_line("message", &m, "2030-01-02T11:40:43+00:00");

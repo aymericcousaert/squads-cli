@@ -1,5 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 // Helper deserializers imported from parent module
 // (Currently using local implementations)
@@ -250,11 +251,21 @@ where
 {
     let raw = Vec::<Value>::deserialize(deserializer)?;
     let mut kept: Vec<Message> = Vec::with_capacity(raw.len());
+    let mut client_ids: Vec<Option<String>> = Vec::with_capacity(raw.len());
     let mut skipped = 0usize;
 
     for value in raw {
         match Message::deserialize(&value) {
-            Ok(message) => kept.push(message),
+            Ok(message) => {
+                kept.push(message);
+                client_ids.push(
+                    value
+                        .get("clientmessageid")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_string),
+                );
+            }
             Err(e) => {
                 skipped += 1;
                 // Name the message: a silent drop is the expensive kind.
@@ -267,7 +278,40 @@ where
     if skipped > 0 {
         tracing::warn!("skipped {skipped} of {} messages", skipped + kept.len());
     }
-    Ok(kept)
+    Ok(drop_repeats(kept, &client_ids))
+}
+
+/// Keeps the first copy of each message a client sent more than once.
+///
+/// A retried send leaves two messages under one client id, and Teams shows one.
+fn drop_repeats(messages: Vec<Message>, client_ids: &[Option<String>]) -> Vec<Message> {
+    let mut first: HashMap<&str, u64> = HashMap::new();
+    for (message, client_id) in messages.iter().zip(client_ids) {
+        if let (Some(client_id), Some(id)) = (client_id, message_number(message)) {
+            let at = first.entry(client_id).or_insert(id);
+            *at = (*at).min(id);
+        }
+    }
+    let keep: Vec<bool> = messages
+        .iter()
+        .zip(client_ids)
+        .map(
+            |(message, client_id)| match (client_id, message_number(message)) {
+                (Some(client_id), Some(id)) => first.get(client_id.as_str()) == Some(&id),
+                _ => true,
+            },
+        )
+        .collect();
+    messages
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(message, keep)| keep.then_some(message))
+        .collect()
+}
+
+/// A message id is its compose time in milliseconds, so the smallest is the first sent.
+fn message_number(message: &Message) -> Option<u64> {
+    message.id.as_deref()?.parse().ok()
 }
 
 /// Conversations response
@@ -407,6 +451,33 @@ mod tests {
             .messages
             .iter()
             .all(|m| m.id.as_deref() == Some("1700000000000")));
+    }
+
+    #[test]
+    fn a_send_retried_by_the_client_shows_once() {
+        let payload = r#"{"messages":[
+            {"id":"1700000001200","clientmessageid":"77","content":"<p>hi</p>"},
+            {"id":"1700000000000","clientmessageid":"77","content":"<p>hi</p>"},
+            {"id":"1699999999000","clientmessageid":"76","content":"<p>hi</p>"},
+            {"id":"1699999998000","content":"<p>hi</p>"},
+            {"id":"1699999997000","content":"<p>hi</p>"}
+        ]}"#;
+        let convs: Conversations =
+            serde_json::from_str(payload).expect("conversation should parse");
+        let ids: Vec<_> = convs
+            .messages
+            .iter()
+            .filter_map(|m| m.id.as_deref())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "1700000000000",
+                "1699999999000",
+                "1699999998000",
+                "1699999997000"
+            ]
+        );
     }
 
     /// System messages carry no sender, and with `deserialize_with` serde needs
